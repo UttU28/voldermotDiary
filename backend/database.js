@@ -172,6 +172,22 @@ const dbOperations = {
     stmt.run(pageName, pageId);
   },
 
+  // Delete a page and all its strokes
+  deletePage: (pageId) => {
+    // Delete all strokes for this page
+    const deleteStrokesStmt = db.prepare('DELETE FROM strokes WHERE room_id = ?');
+    const strokesDeleted = deleteStrokesStmt.run(pageId);
+    
+    // Delete the room/page
+    const deleteRoomStmt = db.prepare('DELETE FROM rooms WHERE room_id = ?');
+    const roomDeleted = deleteRoomStmt.run(pageId);
+    
+    return {
+      strokesDeleted: strokesDeleted.changes,
+      roomDeleted: roomDeleted.changes > 0
+    };
+  },
+
   // Close database connection
   close: () => {
     db.close();

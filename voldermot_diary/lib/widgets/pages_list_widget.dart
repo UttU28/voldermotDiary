@@ -6,6 +6,7 @@ class PagesListWidget extends StatelessWidget {
   final String? pagesErrorMessage;
   final VoidCallback onRefresh;
   final Function(String) onPageTap;
+  final Function(String) onPageDelete;
   final String Function(int) formatTimestamp;
 
   const PagesListWidget({
@@ -15,6 +16,7 @@ class PagesListWidget extends StatelessWidget {
     this.pagesErrorMessage,
     required this.onRefresh,
     required this.onPageTap,
+    required this.onPageDelete,
     required this.formatTimestamp,
   });
 
@@ -137,13 +139,54 @@ class PagesListWidget extends StatelessWidget {
                                   ),
                                 ],
                               ),
-                              trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  IconButton(
+                                    icon: const Icon(Icons.delete, color: Colors.red),
+                                    onPressed: () => _showDeleteDialog(context, page),
+                                    tooltip: 'Delete page',
+                                  ),
+                                  const Icon(Icons.arrow_forward_ios, size: 16),
+                                ],
+                              ),
                               onTap: () => onPageTap(page['pageId']),
                             ),
                           );
                         },
                       ),
       ],
+    );
+  }
+
+  void _showDeleteDialog(BuildContext context, Map<String, dynamic> page) {
+    showDialog(
+      context: context,
+      builder: (BuildContext dialogContext) {
+        return AlertDialog(
+          title: const Text('Delete Page'),
+          content: Text(
+            'Are you sure you want to delete "${page['pageName'] ?? 'Untitled Page'}"?\n\n'
+            'This will permanently delete the page and all its drawings.',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                Navigator.of(dialogContext).pop();
+                onPageDelete(page['pageId']);
+              },
+              style: TextButton.styleFrom(
+                foregroundColor: Colors.red,
+              ),
+              child: const Text('Delete'),
+            ),
+          ],
+        );
+      },
     );
   }
 }

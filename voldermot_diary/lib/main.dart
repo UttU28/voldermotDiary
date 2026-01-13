@@ -99,7 +99,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
   // Get the correct server URL based on platform
   String get serverUrl {
     // Production URL (HTTPS)
-    const productionUrl = 'https://doldermotDiary.thatinsaneguy.com';
+    const productionUrl = 'https://voldermotdiary.thatinsaneguy.com';
     
     // Local development URL (for testing)
     const localUrl = 'http://10.0.0.65:3000';
@@ -245,6 +245,46 @@ class _ConnectionPageState extends State<ConnectionPage> {
           SnackBar(content: Text('Error getting latest page: $e')),
         );
       }
+    }
+  }
+
+  Future<void> deletePage(String pageId) async {
+    try {
+      final response = await http.delete(Uri.parse('$serverUrl/api/pages/$pageId'));
+      if (!mounted) return;
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Page deleted successfully'),
+                backgroundColor: Colors.green,
+              ),
+            );
+          }
+          // Refresh the pages list
+          await loadPages();
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Failed to delete page: ${data['error']}')),
+            );
+          }
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to delete page: ${response.statusCode}')),
+          );
+        }
+      }
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error deleting page: $e')),
+      );
     }
   }
 
@@ -581,6 +621,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
                       pagesErrorMessage: pagesErrorMessage,
                       onRefresh: loadPages,
                       onPageTap: joinPage,
+                      onPageDelete: deletePage,
                       formatTimestamp: formatTimestamp,
                     ),
                     

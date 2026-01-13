@@ -9,8 +9,9 @@ const db = require('./database');
 const app = express();
 
 // SSL certificate paths (for HTTPS)
-const SSL_CERT_PATH = process.env.SSL_CERT_PATH || '/etc/letsencrypt/live/doldermotDiary.thatinsaneguy.com/fullchain.pem';
-const SSL_KEY_PATH = process.env.SSL_KEY_PATH || '/etc/letsencrypt/live/doldermotDiary.thatinsaneguy.com/privkey.pem';
+// Note: Nginx handles SSL termination, so backend runs on HTTP internally
+const SSL_CERT_PATH = process.env.SSL_CERT_PATH || '/etc/letsencrypt/live/voldermotdiary.thatinsaneguy.com/fullchain.pem';
+const SSL_KEY_PATH = process.env.SSL_KEY_PATH || '/etc/letsencrypt/live/voldermotdiary.thatinsaneguy.com/privkey.pem';
 
 // Create server (HTTPS if certificates exist, otherwise HTTP)
 let server;
@@ -37,7 +38,7 @@ if (useHTTPS) {
 const io = new Server(server, {
   cors: {
     origin: "*", // Allow all origins for development
-    methods: ["GET", "POST"]
+    methods: ["GET", "POST", "DELETE", "PUT", "PATCH"]
   }
 });
 
@@ -110,6 +111,39 @@ app.get('/api/pages/latest', (req, res) => {
     res.json({ success: true, page: latestPage });
   } catch (error) {
     console.error('Error getting latest page:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Delete a page
+app.delete('/api/pages/:pageId', (req, res) => {
+  try {
+    const { pageId } = req.params;
+    console.log(`🗑️  Delete request for page: ${pageId}`);
+    
+    if (!pageId) {
+      return res.status(400).json({ success: false, error: 'Page ID is required' });
+    }
+    
+    const result = db.deletePage(pageId);
+    console.log(`🗑️  Delete result:`, result);
+    
+    if (result.roomDeleted) {
+      // Notify all connected clients in this room that the page was deleted
+      io.to(pageId).emit('page-deleted', { pageId });
+      
+      console.log(`✅ Page ${pageId} deleted successfully (${result.strokesDeleted} strokes removed)`);
+      res.json({ 
+        success: true, 
+        message: 'Page deleted successfully',
+        strokesDeleted: result.strokesDeleted
+      });
+    } else {
+      console.log(`❌ Page ${pageId} not found`);
+      res.status(404).json({ success: false, error: 'Page not found' });
+    }
+  } catch (error) {
+    console.error('❌ Error deleting page:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });
