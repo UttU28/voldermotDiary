@@ -58,6 +58,22 @@ app.get('/health', (req, res) => {
   });
 });
 
+// Root endpoint - returns health status
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    service: 'Voldermot Diary Backend',
+    timestamp: new Date().toISOString(),
+    connectedUsers: users.size,
+    activeRooms: rooms.size,
+    endpoints: {
+      health: '/health',
+      pages: '/api/pages',
+      latestPage: '/api/pages/latest'
+    }
+  });
+});
+
 // Get all pages
 app.get('/api/pages', (req, res) => {
   try {
@@ -305,7 +321,7 @@ io.on('connection', (socket) => {
   });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 3012;
 const DOMAIN = process.env.DOMAIN || 'localhost';
 
 server.listen(PORT, () => {
@@ -314,4 +330,7 @@ server.listen(PORT, () => {
   console.log(`📡 WebSocket server ready for connections`);
   console.log(`🌐 Server URL: ${protocol}://${DOMAIN}:${PORT}`);
   console.log(`🏥 Health check: ${protocol}://${DOMAIN}:${PORT}/health`);
+  if (!useHTTPS && DOMAIN !== 'localhost') {
+    console.log(`🔒 To enable HTTPS, run: sudo certbot --nginx -d ${DOMAIN}`);
+  }
 });

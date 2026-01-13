@@ -1,148 +1,166 @@
 #!/bin/bash
 
 # Voldermot Diary Backend Deployment Script
-# Deploys to voldermotDiary.thatinsaneguy.com
+echo "🚀 Starting Voldermot Diary Backend deployment..."
 
-echo "🚀 Starting deployment to voldermotDiary.thatinsaneguy.com..."
+# Colors for output
+GREEN='\033[0;32m'
+BLUE='\033[0;34m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-# Set domain
-DOMAIN="voldermotDiary.thatinsaneguy.com"
-APP_DIR="/var/www/voldermot-diary-backend"
-SERVICE_NAME="voldermot-diary-backend"
+# Function to print colored output
+print_status() {
+    echo -e "${GREEN}[INFO]${NC} $1"
+}
 
-# Check if running as root or with sudo
-if [ "$EUID" -ne 0 ]; then 
-    echo "⚠️  Please run with sudo for systemd service management"
+print_header() {
+    echo -e "${BLUE}$1${NC}"
+}
+
+print_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+print_warning() {
+    echo -e "${YELLOW}[WARNING]${NC} $1"
+}
+
+# Check if PM2 is installed
+if ! command -v pm2 &> /dev/null; then
+    print_error "PM2 is not installed. Please install PM2 first:"
+    echo "npm install -g pm2"
     exit 1
 fi
 
 # Navigate to backend directory
 cd "$(dirname "$0")" || exit
 
-echo "📦 Installing dependencies..."
-npm install --production
+# Stop and remove existing instance
+print_header "🧹 Cleaning up existing service..."
+print_status "Stopping and removing existing voldermot-diary-backend process..."
+pm2 delete voldermot-diary-backend 2>/dev/null || print_status "voldermot-diary-backend not running"
+print_status "Cleanup completed"
 
-echo "🔧 Setting up environment..."
-# Create .env file if it doesn't exist
-if [ ! -f .env ]; then
-    cat > .env << EOF
-NODE_ENV=production
-PORT=3000
-DOMAIN=$DOMAIN
-SSL_CERT_PATH=/etc/letsencrypt/live/$DOMAIN/fullchain.pem
-SSL_KEY_PATH=/etc/letsencrypt/live/$DOMAIN/privkey.pem
-EOF
-    echo "✅ Created .env file"
-fi
-
-# Copy files to deployment directory
-echo "📁 Copying files to $APP_DIR..."
-mkdir -p "$APP_DIR"
-cp -r . "$APP_DIR/" 2>/dev/null || {
-    echo "⚠️  Could not copy to $APP_DIR, continuing with local directory..."
-    APP_DIR="$(pwd)"
-}
-
-# Create systemd service file
-echo "⚙️  Creating systemd service..."
-cat > /etc/systemd/system/$SERVICE_NAME.service << EOF
-[Unit]
-Description=Voldermot Diary Backend Server
-After=network.target
-
-[Service]
-Type=simple
-User=www-data
-WorkingDirectory=$APP_DIR
-Environment=NODE_ENV=production
-Environment=PORT=3000
-Environment=DOMAIN=$DOMAIN
-ExecStart=/usr/bin/node $APP_DIR/server.js
-Restart=always
-RestartSec=10
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier=$SERVICE_NAME
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# Reload systemd
-systemctl daemon-reload
-
-# Enable and start service
-echo "🔄 Starting service..."
-systemctl enable $SERVICE_NAME
-systemctl restart $SERVICE_NAME
-
-# Check service status
-if systemctl is-active --quiet $SERVICE_NAME; then
-    echo "✅ Service is running!"
-    echo "📊 Service status:"
-    systemctl status $SERVICE_NAME --no-pager -l
+# Install Dependencies
+print_header "📦 Installing Dependencies..."
+if [ -f "package.json" ]; then
+    print_status "Installing npm packages..."
+    npm install
+    if [ $? -ne 0 ]; then
+        print_error "Failed to install dependencies"
+        exit 1
+    fi
+    print_status "Dependencies installed successfully"
 else
-    echo "❌ Service failed to start. Check logs with: journalctl -u $SERVICE_NAME -f"
+    print_error "package.json not found"
     exit 1
 fi
 
-# Setup Nginx reverse proxy (if nginx is installed)
-if command -v nginx &> /dev/null; then
-    echo "🌐 Setting up Nginx reverse proxy..."
-    cat > /etc/nginx/sites-available/$DOMAIN << EOF
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $DOMAIN;
-
-    # Redirect HTTP to HTTPS
-    return 301 https://\$server_name\$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name $DOMAIN;
-
-    ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
-    
-    # SSL configuration
-    ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_ciphers HIGH:!aNULL:!MD5;
-    ssl_prefer_server_ciphers on;
-
-    # WebSocket support
-    location / {
-        proxy_pass http://localhost:3000;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-}
+# Setup environment
+print_header "🔧 Setting up environment..."
+if [ ! -f ".env" ]; then
+    print_status "Creating .env file..."
+    cat > .env << EOF
+NODE_ENV=production
+PORT=3012
+DOMAIN=voldermotDiary.thatinsaneguy.com
 EOF
-
-    # Enable site
-    ln -sf /etc/nginx/sites-available/$DOMAIN /etc/nginx/sites-enabled/
-    
-    # Test nginx config
-    if nginx -t; then
-        systemctl reload nginx
-        echo "✅ Nginx configuration updated"
-    else
-        echo "⚠️  Nginx configuration test failed. Please check manually."
-    fi
+    print_status ".env file created"
 else
-    echo "ℹ️  Nginx not found. Skipping reverse proxy setup."
-    echo "💡 Install Nginx and SSL certificates (Let's Encrypt) for HTTPS support"
+    print_status ".env file already exists"
+    # Update PORT if it's not 3012
+    if ! grep -q "PORT=3012" .env; then
+        print_status "Updating PORT to 3012 in .env..."
+        if grep -q "^PORT=" .env; then
+            sed -i 's/^PORT=.*/PORT=3012/' .env
+        else
+            echo "PORT=3012" >> .env
+        fi
+    fi
+    # Update DOMAIN if not set
+    if ! grep -q "DOMAIN=" .env; then
+        echo "DOMAIN=voldermotDiary.thatinsaneguy.com" >> .env
+    fi
 fi
 
-echo ""
-echo "🎉 Deployment complete!"
-echo "🌐 Backend should be accessible at: https://$DOMAIN"
-echo "📝 To view logs: journalctl -u $SERVICE_NAME -f"
-echo "🔄 To restart: sudo systemctl restart $SERVICE_NAME"
+# Start Backend
+print_header "🚀 Starting Backend..."
+if [ -f "server.js" ]; then
+    pm2 start server.js --name voldermot-diary-backend
+    if [ $? -eq 0 ]; then
+        print_status "Backend started successfully on port 3012"
+    else
+        print_error "Failed to start backend"
+        exit 1
+    fi
+else
+    print_error "server.js not found"
+    exit 1
+fi
+
+# Save PM2 configuration
+print_status "Saving PM2 configuration..."
+pm2 save
+
+# Setup PM2 to start on boot (silently)
+pm2 startup > /dev/null 2>&1 || true
+
+# Show PM2 status
+print_header "📊 Application Status:"
+pm2 status
+
+# Setup Nginx (if nginx is installed and running as root/sudo)
+print_header "🌐 Setting up Nginx..."
+if command -v nginx &> /dev/null; then
+    if [ "$EUID" -eq 0 ] || [ -n "$SUDO_USER" ]; then
+        NGINX_CONF="/etc/nginx/sites-available/voldermotDiary.thatinsaneguy.com"
+        SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+        ROOT_DIR="$(dirname "$SCRIPT_DIR")"
+        
+        if [ -f "$ROOT_DIR/nginx-voldermotdiary.conf" ]; then
+            print_status "Copying nginx configuration..."
+            cp "$ROOT_DIR/nginx-voldermotdiary.conf" "$NGINX_CONF"
+            
+            # Enable site
+            ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/ 2>/dev/null || true
+            
+            # Test nginx config
+            if nginx -t 2>/dev/null; then
+                systemctl reload nginx 2>/dev/null || service nginx reload 2>/dev/null || true
+                print_status "✅ Nginx configuration updated and reloaded"
+            else
+                print_error "Nginx configuration test failed. Please check manually."
+            fi
+        else
+            print_warning "nginx-voldermotdiary.conf not found in $ROOT_DIR"
+            print_status "You can manually copy the nginx config from the project root"
+        fi
+    else
+        print_status "Not running as root. Skipping nginx setup."
+        print_status "To set up nginx, run with sudo or manually:"
+        echo "  sudo cp ../nginx-voldermotdiary.conf /etc/nginx/sites-available/voldermotDiary.thatinsaneguy.com"
+        echo "  sudo ln -s /etc/nginx/sites-available/voldermotDiary.thatinsaneguy.com /etc/nginx/sites-enabled/"
+        echo "  sudo nginx -t"
+        echo "  sudo systemctl reload nginx"
+    fi
+else
+    print_status "Nginx not found. Skipping nginx setup."
+    print_status "Install nginx to serve on subdomain: sudo apt install nginx"
+fi
+
+print_header "✅ Deployment Complete!"
+print_status "Backend: http://localhost:3012"
+if command -v nginx &> /dev/null && [ -f "/etc/nginx/sites-enabled/voldermotDiary.thatinsaneguy.com" ]; then
+    print_status "Subdomain: http://voldermotDiary.thatinsaneguy.com"
+    print_status ""
+    print_status "🔒 To enable HTTPS, run:"
+    echo "   sudo certbot --nginx -d voldermotDiary.thatinsaneguy.com"
+fi
+print_status ""
+print_status "Useful commands:"
+echo "  pm2 status                        - View application status"
+echo "  pm2 logs voldermot-diary-backend  - View application logs"
+echo "  pm2 stop voldermot-diary-backend  - Stop the application"
+echo "  pm2 restart voldermot-diary-backend - Restart the application"
