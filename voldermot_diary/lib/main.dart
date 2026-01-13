@@ -1,8 +1,12 @@
-import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'pages/loading_page.dart';
+import 'widgets/connection_status_widget.dart';
+import 'widgets/disconnected_state_widget.dart';
+import 'widgets/action_buttons_widget.dart';
+import 'widgets/pages_list_widget.dart';
 
 void main() {
   runApp(const MyApp());
@@ -62,7 +66,14 @@ class MyApp extends StatelessWidget {
 }
 
 class ConnectionPage extends StatefulWidget {
-  const ConnectionPage({super.key});
+  final IO.Socket? existingSocket;
+  final String? existingSocketId;
+  
+  const ConnectionPage({
+    super.key,
+    this.existingSocket,
+    this.existingSocketId,
+  });
 
   @override
   State<ConnectionPage> createState() => _ConnectionPageState();
@@ -78,79 +89,225 @@ class _ConnectionPageState extends State<ConnectionPage> {
   String currentRoomId = '';
   String currentUserId = '';
   bool isConnecting = false;
+  final List<Function> socketListeners = [];
+  
+  // Pages list state
+  List<Map<String, dynamic>> pages = [];
+  bool isLoadingPages = false;
+  String? pagesErrorMessage;
 
   // Get the correct server URL based on platform
   String get serverUrl {
-    if (kIsWeb) {
-      // Web platform
-      return 'http://10.0.0.65:3000';
-      return 'http://localhost:3000';
-    } else if (Platform.isAndroid) {
-      // For physical Android device over WiFi, use your computer's local IP
-      // For Android emulator, use 10.0.2.2 to access host machine's localhost
-      // Change this to your computer's IP address when testing on physical device
-      return 'http://10.0.0.65:3000';
-    } else if (Platform.isIOS) {
-      // iOS simulator can use localhost
-      // For physical iOS device, use your computer's IP address
-      return 'http://10.0.0.65:3000';
-    } else {
-      // Windows, Linux, macOS
-      return 'http://10.0.0.65:3000';
-      return 'http://localhost:3000';
-    }
+    // Production URL (HTTPS)
+    const productionUrl = 'https://doldermotDiary.thatinsaneguy.com';
+    
+    // Local development URL (for testing)
+    const localUrl = 'http://10.0.0.65:3000';
+    
+    // Use production URL by default, or local for development
+    // Set USE_LOCAL_SERVER=true in environment to use local server
+    const useLocal = const bool.fromEnvironment('USE_LOCAL_SERVER', defaultValue: false);
+    
+    return useLocal ? localUrl : productionUrl;
   }
 
   @override
   void initState() {
     super.initState();
-    // Auto-connect on startup
+    // If we have an existing socket, use it; otherwise connect
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      connectToServer();
+      if (widget.existingSocket != null && widget.existingSocket!.connected) {
+        // Reuse existing socket
+        socket = widget.existingSocket;
+        socketId = widget.existingSocketId ?? '';
+        if (mounted) {
+          setState(() {
+            connectionStatus = 'Connected';
+            statusColor = Colors.green;
+            serverMessage = 'Connected to server';
+            isConnecting = false;
+          });
+          setupSocketListeners();
+          loadPages();
+        }
+      } else {
+        // Connect to server
+        connectToServer();
+      }
     });
   }
-
-  void connectToServer() {
-    if (isConnecting) return; // Prevent multiple connection attempts
-    
+  
+  Future<void> loadPages() async {
+    if (!mounted) return;
     setState(() {
-      isConnecting = true;
-      connectionStatus = 'Connecting...';
-      statusColor = Colors.orange;
-      serverMessage = 'Connecting to server...';
+      isLoadingPages = true;
+      pagesErrorMessage = null;
     });
-    
+
     try {
-      socket = IO.io(
-        serverUrl,
-        IO.OptionBuilder()
-            .setTransports(['websocket'])
-            .enableAutoConnect()
-            .build(),
+      final response = await http.get(Uri.parse('$serverUrl/api/pages'));
+      if (!mounted) return;
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          setState(() {
+            pages = List<Map<String, dynamic>>.from(data['pages'] ?? []);
+            isLoadingPages = false;
+          });
+        } else {
+          setState(() {
+            pagesErrorMessage = data['error'] ?? 'Failed to load pages';
+            isLoadingPages = false;
+          });
+        }
+      } else {
+        setState(() {
+          pagesErrorMessage = 'Failed to load pages: ${response.statusCode}';
+          isLoadingPages = false;
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        pagesErrorMessage = 'Error: $e';
+        isLoadingPages = false;
+      });
+    }
+  }
+
+  Future<void> createNewPage() async {
+    final now = DateTime.now();
+    final pageName = '${now.year}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')} ${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+
+    try {
+      final response = await http.post(
+        Uri.parse('$serverUrl/api/pages'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'pageName': pageName}),
       );
 
-      // Connection event
-      socket!.onConnect((_) {
-        setState(() {
-          connectionStatus = 'Connected';
-          statusColor = Colors.green;
-          serverMessage = 'Successfully connected to server';
-          isConnecting = false;
-        });
-        print('✅ Connected to server');
-      });
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true) {
+          final page = data['page'];
+          await loadPages();
+          joinPage(page['pageId']);
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Failed to create page: ${data['error']}')),
+            );
+          }
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to create page: ${response.statusCode}')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error creating page: $e')),
+        );
+      }
+    }
+  }
 
-      // Connection status event
-      socket!.on('connection-status', (data) {
+  Future<void> joinLatestPage() async {
+    try {
+      final response = await http.get(Uri.parse('$serverUrl/api/pages/latest'));
+      if (!mounted) return;
+      
+      if (response.statusCode == 200) {
+        final data = json.decode(response.body);
+        if (data['success'] == true && data['page'] != null) {
+          joinPage(data['page']['pageId']);
+        } else {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('No pages available. Create a new page first.')),
+            );
+          }
+        }
+      } else {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Failed to get latest page: ${response.statusCode}')),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error getting latest page: $e')),
+        );
+      }
+    }
+  }
+
+  void joinPage(String pageId) {
+    if (socket != null && socket!.connected) {
+      final userId = socketId.isNotEmpty ? socketId : 'user-${DateTime.now().millisecondsSinceEpoch}';
+      currentUserId = userId;
+      socket!.emit('join-room', {
+        'roomId': pageId,
+        'userId': userId,
+      });
+    } else {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Not connected to server. Please reconnect.')),
+        );
+      }
+    }
+  }
+
+  String formatTimestamp(int timestamp) {
+    final date = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')} ${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+  }
+
+  void setupSocketListeners() {
+    if (socket == null) return;
+    
+    // Clear existing listeners first
+    for (var cleanup in socketListeners) {
+      try {
+        cleanup();
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
+    }
+    socketListeners.clear();
+
+    // Connection status event
+    final connectionStatusHandler = (data) {
+      if (mounted) {
         setState(() {
-          socketId = data['socketId'] ?? '';
+          socketId = data['socketId'] ?? socketId;
           serverMessage = data['message'] ?? 'Connected';
+          if (connectionStatus != 'Connected') {
+            connectionStatus = 'Connected';
+            statusColor = Colors.green;
+            isConnecting = false;
+          }
         });
-        print('📡 Connection status: $data');
-      });
+        // Load pages if not already loaded
+        if (pages.isEmpty && !isLoadingPages) {
+          loadPages();
+        }
+      }
+      print('📡 Connection status: $data');
+    };
+    socket!.on('connection-status', connectionStatusHandler);
+    socketListeners.add(() => socket?.off('connection-status', connectionStatusHandler));
 
-      // Room joined event
-      socket!.on('room-joined', (data) {
+    // Room joined event
+    final roomJoinedHandler = (data) {
+      if (mounted) {
         setState(() {
           usersInRoom = data['usersInRoom'] ?? 0;
           currentRoomId = data['roomId'] ?? 'default-room';
@@ -160,8 +317,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
         print('📝 Room joined: $data');
         
         // Navigate to loading page first, then to drawing page
-        if (socket != null && socket!.connected) {
-          Navigator.push(
+        if (socket != null && socket!.connected && mounted) {
+          Navigator.pushReplacement(
             context,
             MaterialPageRoute(
               builder: (context) => LoadingPage(
@@ -173,26 +330,38 @@ class _ConnectionPageState extends State<ConnectionPage> {
             ),
           );
         }
-      });
+      }
+    };
+    socket!.on('room-joined', roomJoinedHandler);
+    socketListeners.add(() => socket?.off('room-joined', roomJoinedHandler));
 
-      // User joined event
-      socket!.on('user-joined', (data) {
+    // User joined event
+    final userJoinedHandler = (data) {
+      if (mounted) {
         setState(() {
           usersInRoom = data['usersInRoom'] ?? 0;
         });
-        print('👤 User joined: $data');
-      });
+      }
+      print('👤 User joined: $data');
+    };
+    socket!.on('user-joined', userJoinedHandler);
+    socketListeners.add(() => socket?.off('user-joined', userJoinedHandler));
 
-      // User left event
-      socket!.on('user-left', (data) {
+    // User left event
+    final userLeftHandler = (data) {
+      if (mounted) {
         setState(() {
           usersInRoom = data['usersInRoom'] ?? 0;
         });
-        print('👋 User left: $data');
-      });
+      }
+      print('👋 User left: $data');
+    };
+    socket!.on('user-left', userLeftHandler);
+    socketListeners.add(() => socket?.off('user-left', userLeftHandler));
 
-      // Disconnect event
-      socket!.onDisconnect((_) {
+    // Disconnect event
+    socket!.onDisconnect((_) {
+      if (mounted) {
         setState(() {
           connectionStatus = 'Disconnected';
           statusColor = Colors.red;
@@ -201,42 +370,131 @@ class _ConnectionPageState extends State<ConnectionPage> {
           usersInRoom = 0;
           isConnecting = false;
         });
-        print('❌ Disconnected from server');
-      });
+      }
+      print('❌ Disconnected from server');
+    });
 
-      // Error event
-      socket!.onError((error) {
-        setState(() {
+    // Error event
+    socket!.onError((error) {
+      if (mounted) {
+    setState(() {
           connectionStatus = 'Error';
           statusColor = Colors.orange;
           serverMessage = 'Connection error: $error';
           isConnecting = false;
         });
-        print('⚠️ Error: $error');
+      }
+      print('⚠️ Error: $error');
+    });
+  }
+
+  void connectToServer() {
+    // Check if already connected
+    if (socket != null && socket!.connected) {
+      // Already connected, just load pages and update UI
+      if (mounted) {
+        setState(() {
+          connectionStatus = 'Connected';
+          statusColor = Colors.green;
+          serverMessage = 'Connected to server';
+          isConnecting = false;
+        });
+        loadPages();
+      }
+      return;
+    }
+    
+    if (isConnecting) return; // Prevent multiple connection attempts
+    
+    setState(() {
+      isConnecting = true;
+      connectionStatus = 'Connecting...';
+      statusColor = Colors.orange;
+      serverMessage = 'Connecting to server...';
+    });
+    
+    try {
+      // Dispose old socket if exists
+      if (socket != null) {
+        socket!.dispose();
+        socket = null;
+      }
+      
+      socket = IO.io(
+        serverUrl,
+        IO.OptionBuilder()
+            .setTransports(['websocket'])
+            .enableAutoConnect()
+            .build(),
+      );
+
+      // Connection event
+      socket!.onConnect((_) {
+        if (mounted) {
+          setState(() {
+            connectionStatus = 'Connected';
+            statusColor = Colors.green;
+            serverMessage = 'Successfully connected to server';
+            isConnecting = false;
+          });
+          setupSocketListeners();
+          // Load pages when connected
+          loadPages();
+        }
+        print('✅ Connected to server');
       });
 
       socket!.connect();
-    } catch (e) {
-      setState(() {
-        connectionStatus = 'Error';
-        statusColor = Colors.orange;
-        serverMessage = 'Failed to connect: $e';
-        isConnecting = false;
+      
+      // Add timeout for connection
+      Future.delayed(const Duration(seconds: 5), () {
+        if (mounted && isConnecting && (socket == null || !socket!.connected)) {
+          setState(() {
+            connectionStatus = 'Error';
+            statusColor = Colors.red;
+            serverMessage = 'Connection timeout. Please check if server is running.';
+            isConnecting = false;
+          });
+          print('⏱️ Connection timeout');
+        }
       });
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          connectionStatus = 'Error';
+          statusColor = Colors.orange;
+          serverMessage = 'Failed to connect: $e';
+          isConnecting = false;
+        });
+      }
       print('❌ Connection error: $e');
     }
   }
 
   void disconnectFromServer() {
+    // Remove all listeners first
+    for (var cleanup in socketListeners) {
+      try {
+        cleanup();
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
+    }
+    socketListeners.clear();
+    
     socket?.disconnect();
     socket?.dispose();
-    setState(() {
-      connectionStatus = 'Disconnected';
-      statusColor = Colors.red;
-      serverMessage = 'Disconnected';
-      socketId = '';
-      usersInRoom = 0;
-    });
+    socket = null;
+    
+    if (mounted) {
+      setState(() {
+        connectionStatus = 'Disconnected';
+        statusColor = Colors.red;
+        serverMessage = 'Disconnected';
+        socketId = '';
+        usersInRoom = 0;
+      });
+    }
   }
 
   void joinRoom() {
@@ -252,8 +510,18 @@ class _ConnectionPageState extends State<ConnectionPage> {
 
   @override
   void dispose() {
-    socket?.disconnect();
-    socket?.dispose();
+    // Remove all socket listeners first to prevent setState after dispose
+    for (var cleanup in socketListeners) {
+      try {
+        cleanup();
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
+    }
+    socketListeners.clear();
+    
+    // Don't disconnect when navigating - socket is passed to HomePage
+    // Only disconnect if explicitly disconnecting
     super.dispose();
   }
 
@@ -262,143 +530,81 @@ class _ConnectionPageState extends State<ConnectionPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('🪄 Voldermot Diary'),
+        actions: [
+          if (connectionStatus == 'Connected') ...[
+            IconButton(
+              icon: const Icon(Icons.refresh),
+              onPressed: loadPages,
+              tooltip: 'Refresh Pages',
+            ),
+            IconButton(
+              icon: const Icon(Icons.power_settings_new),
+              onPressed: disconnectFromServer,
+              tooltip: 'Disconnect',
+            ),
+          ] else if (connectionStatus == 'Disconnected' || connectionStatus == 'Error') ...[
+            IconButton(
+              icon: const Icon(Icons.link),
+              onPressed: connectToServer,
+              tooltip: 'Reconnect',
+            ),
+          ],
+        ],
       ),
-      body: Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // Status indicator
-              Container(
-                width: 120,
-                height: 120,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: statusColor.withOpacity(0.2),
-                  border: Border.all(color: statusColor, width: 3),
-                ),
-                child: connectionStatus == 'Connecting...'
-                    ? const SizedBox(
-                        width: 60,
-                        height: 60,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 3,
-                          valueColor: AlwaysStoppedAnimation<Color>(Colors.orange),
-                        ),
-                      )
-                    : Icon(
-                        connectionStatus == 'Connected'
-                            ? Icons.check_circle
-                            : connectionStatus == 'Error'
-                                ? Icons.error
-                                : Icons.cancel,
-                        size: 60,
-                        color: statusColor,
-                      ),
-              ),
-              const SizedBox(height: 24),
-              
-              // Connection status text
-              Text(
-                connectionStatus,
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: statusColor,
-                ),
-              ),
-              const SizedBox(height: 16),
-              
-              // Server message
-              Text(
-                serverMessage,
-                textAlign: TextAlign.center,
-                style: const TextStyle(fontSize: 16),
-              ),
-              const SizedBox(height: 32),
-              
-              // Socket ID
-              if (socketId.isNotEmpty)
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12.0),
-                    child: Column(
-                      children: [
-                        const Text('Socket ID:', style: TextStyle(fontSize: 12)),
-                        Text(
-                          socketId,
-                          style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              
-              // Users in room
-              if (usersInRoom > 0)
-                Card(
-                  child: Padding(
-                    padding: const EdgeInsets.all(12.0),
-                    child: Text(
-                      'Users in room: $usersInRoom',
-                      style: const TextStyle(fontSize: 16),
-                    ),
-                  ),
-                ),
-              
-              const SizedBox(height: 32),
-              
-              // Connect button (show if disconnected or error - for manual retry)
-              if (connectionStatus == 'Disconnected' || connectionStatus == 'Error')
-                ElevatedButton.icon(
-                  onPressed: connectToServer,
-                  icon: const Icon(Icons.link),
-                  label: const Text('Connect to Server'),
-                  style: ElevatedButton.styleFrom(
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                  ),
-                ),
-              
-              // Disconnect button
-              if (connectionStatus == 'Connected')
-                Column(
+      body: connectionStatus == 'Connected'
+          ? SingleChildScrollView(
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.start,
                   children: [
-                    ElevatedButton.icon(
-                      onPressed: joinRoom,
-                      icon: const Icon(Icons.group_add),
-                      label: const Text('Join Room'),
-                      style: ElevatedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                        backgroundColor: Colors.blue,
-                      ),
+                    // Compact status for connected state
+                    ConnectionStatusWidget(
+                      connectionStatus: connectionStatus,
+                      statusColor: statusColor,
+                      socketId: socketId,
                     ),
-                    const SizedBox(height: 12),
-                    OutlinedButton.icon(
-                      onPressed: disconnectFromServer,
-                      icon: const Icon(Icons.link_off),
-                      label: const Text('Disconnect'),
-                      style: OutlinedButton.styleFrom(
-                        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                    const SizedBox(height: 16),
+                    
+                    // Action buttons when connected
+                    ActionButtonsWidget(
+                      onCreateNewPage: createNewPage,
+                      onJoinLatest: joinLatestPage,
+                    ),
+                    
+                    const SizedBox(height: 24),
+                    
+                    // Pages list (only show when connected)
+                    PagesListWidget(
+                      pages: pages,
+                      isLoadingPages: isLoadingPages,
+                      pagesErrorMessage: pagesErrorMessage,
+                      onRefresh: loadPages,
+                      onPageTap: joinPage,
+                      formatTimestamp: formatTimestamp,
+                    ),
+                    
+                    const SizedBox(height: 24),
+                    
+                    // Server URL info
+                    Text(
+                      'Server: $serverUrl',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.grey[400],
                       ),
                     ),
                   ],
                 ),
-              
-              const SizedBox(height: 24),
-              
-              // Server URL info
-              Text(
-                'Server: $serverUrl',
-                style: TextStyle(
-                  fontSize: 12,
-                  color: Colors.grey[400],
-                ),
               ),
-            ],
-          ),
-        ),
-      ),
+            )
+          : DisconnectedStateWidget(
+              connectionStatus: connectionStatus,
+              statusColor: statusColor,
+              serverMessage: serverMessage,
+              serverUrl: serverUrl,
+              onReconnect: connectToServer,
+            ),
     );
   }
 }

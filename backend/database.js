@@ -31,6 +31,7 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS rooms (
     room_id TEXT PRIMARY KEY,
+    page_name TEXT NOT NULL,
     created_at INTEGER NOT NULL,
     last_activity INTEGER NOT NULL
   );
@@ -107,21 +108,68 @@ const dbOperations = {
     return result.changes;
   },
 
-  // Update room activity
-  updateRoomActivity: (roomId) => {
+  // Create a new page/room
+  createPage: (pageId, pageName) => {
     const now = Date.now();
     const stmt = db.prepare(`
-      INSERT INTO rooms (room_id, created_at, last_activity)
-      VALUES (?, ?, ?)
-      ON CONFLICT(room_id) DO UPDATE SET last_activity = ?
+      INSERT INTO rooms (room_id, page_name, created_at, last_activity)
+      VALUES (?, ?, ?, ?)
     `);
-    stmt.run(roomId, now, now, now);
+    stmt.run(pageId, pageName, now, now);
+    return { pageId, pageName, createdAt: now, lastActivity: now };
   },
 
   // Get room info
   getRoomInfo: (roomId) => {
     const stmt = db.prepare('SELECT * FROM rooms WHERE room_id = ?');
-    return stmt.get(roomId);
+    const row = stmt.get(roomId);
+    if (row) {
+      return {
+        pageId: row.room_id,
+        pageName: row.page_name,
+        createdAt: row.created_at,
+        lastActivity: row.last_activity
+      };
+    }
+    return null;
+  },
+
+  // Update room activity
+  updateRoomActivity: (roomId) => {
+    const now = Date.now();
+    const roomInfo = dbOperations.getRoomInfo(roomId);
+    const pageName = roomInfo ? roomInfo.pageName : `Page ${roomId}`;
+    const createdAt = roomInfo ? roomInfo.createdAt : now;
+    
+    const stmt = db.prepare(`
+      INSERT INTO rooms (room_id, page_name, created_at, last_activity)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(room_id) DO UPDATE SET last_activity = ?
+    `);
+    stmt.run(roomId, pageName, createdAt, now, now);
+  },
+
+  // Get all pages sorted by last activity
+  getAllPages: () => {
+    const stmt = db.prepare(`
+      SELECT * FROM rooms 
+      ORDER BY last_activity DESC
+    `);
+    const rows = stmt.all();
+    return rows.map(row => ({
+      pageId: row.room_id,
+      pageName: row.page_name,
+      createdAt: row.created_at,
+      lastActivity: row.last_activity
+    }));
+  },
+
+  // Update page name
+  updatePageName: (pageId, pageName) => {
+    const stmt = db.prepare(`
+      UPDATE rooms SET page_name = ? WHERE room_id = ?
+    `);
+    stmt.run(pageName, pageId);
   },
 
   // Close database connection

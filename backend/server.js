@@ -1,11 +1,37 @@
 const express = require('express');
 const http = require('http');
+const https = require('https');
+const fs = require('fs');
 const { Server } = require('socket.io');
 const cors = require('cors');
 const db = require('./database');
 
 const app = express();
-const server = http.createServer(app);
+
+// SSL certificate paths (for HTTPS)
+const SSL_CERT_PATH = process.env.SSL_CERT_PATH || '/etc/letsencrypt/live/doldermotDiary.thatinsaneguy.com/fullchain.pem';
+const SSL_KEY_PATH = process.env.SSL_KEY_PATH || '/etc/letsencrypt/live/doldermotDiary.thatinsaneguy.com/privkey.pem';
+
+// Create server (HTTPS if certificates exist, otherwise HTTP)
+let server;
+const useHTTPS = fs.existsSync(SSL_CERT_PATH) && fs.existsSync(SSL_KEY_PATH);
+
+if (useHTTPS) {
+  try {
+    const options = {
+      key: fs.readFileSync(SSL_KEY_PATH),
+      cert: fs.readFileSync(SSL_CERT_PATH),
+    };
+    server = https.createServer(options, app);
+    console.log('🔒 HTTPS server initialized with SSL certificates');
+  } catch (error) {
+    console.warn('⚠️  Failed to load SSL certificates, falling back to HTTP:', error.message);
+    server = http.createServer(app);
+  }
+} else {
+  server = http.createServer(app);
+  console.log('ℹ️  Running in HTTP mode (no SSL certificates found)');
+}
 
 // Enable CORS for Flutter app
 const io = new Server(server, {
@@ -30,6 +56,46 @@ app.get('/health', (req, res) => {
     connectedUsers: users.size,
     activeRooms: rooms.size
   });
+});
+
+// Get all pages
+app.get('/api/pages', (req, res) => {
+  try {
+    const pages = db.getAllPages();
+    res.json({ success: true, pages });
+  } catch (error) {
+    console.error('Error getting pages:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Create a new page
+app.post('/api/pages', (req, res) => {
+  try {
+    const { pageName } = req.body;
+    if (!pageName) {
+      return res.status(400).json({ success: false, error: 'Page name is required' });
+    }
+    
+    const pageId = `page-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const page = db.createPage(pageId, pageName);
+    res.json({ success: true, page });
+  } catch (error) {
+    console.error('Error creating page:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Get latest active page
+app.get('/api/pages/latest', (req, res) => {
+  try {
+    const pages = db.getAllPages();
+    const latestPage = pages.length > 0 ? pages[0] : null;
+    res.json({ success: true, page: latestPage });
+  } catch (error) {
+    console.error('Error getting latest page:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // Socket.IO connection handling
@@ -71,11 +137,19 @@ io.on('connection', (socket) => {
     // Leave previous room if any
     if (users.has(socket.id)) {
       const prevRoomId = users.get(socket.id).roomId;
-      if (prevRoomId && rooms.has(prevRoomId)) {
-        rooms.get(prevRoomId).delete(socket.id);
-        if (rooms.get(prevRoomId).size === 0) {
-          rooms.delete(prevRoomId);
+      if (prevRoomId && prevRoomId !== roomId) {
+        // Leave Socket.IO room
+        socket.leave(prevRoomId);
+        
+        // Remove from rooms tracking
+        if (rooms.has(prevRoomId)) {
+          rooms.get(prevRoomId).delete(socket.id);
+          if (rooms.get(prevRoomId).size === 0) {
+            rooms.delete(prevRoomId);
+          }
         }
+        
+        console.log(`👋 User ${socket.id} left room: ${prevRoomId}`);
       }
     }
 
@@ -94,7 +168,11 @@ io.on('connection', (socket) => {
 
     console.log(`📝 User ${socket.id} joined room: ${roomId}`);
     
-    // Update room activity
+    // Update room activity (will create if doesn't exist)
+    const roomInfo = db.getRoomInfo(roomId);
+    if (!roomInfo) {
+      db.createPage(roomId, `Page ${roomId}`);
+    }
     db.updateRoomActivity(roomId);
     
     // Notify client of successful join
@@ -228,9 +306,12 @@ io.on('connection', (socket) => {
 });
 
 const PORT = process.env.PORT || 3000;
+const DOMAIN = process.env.DOMAIN || 'localhost';
 
 server.listen(PORT, () => {
+  const protocol = useHTTPS ? 'https' : 'http';
   console.log(`🪄 Voldermot Diary Backend Server running on port ${PORT}`);
   console.log(`📡 WebSocket server ready for connections`);
-  console.log(`🏥 Health check: http://localhost:${PORT}/health`);
+  console.log(`🌐 Server URL: ${protocol}://${DOMAIN}:${PORT}`);
+  console.log(`🏥 Health check: ${protocol}://${DOMAIN}:${PORT}/health`);
 });

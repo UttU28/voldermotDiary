@@ -2,9 +2,13 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
-import 'package:lottie/lottie.dart';
 import '../models/stroke.dart';
 import '../models/animated_stroke.dart';
+import '../widgets/connection_status_bar.dart';
+import '../widgets/back_button.dart' show DrawingBackButton;
+import '../widgets/control_buttons.dart';
+import '../main.dart';
+import '../widgets/drawing_painter.dart';
 
 class DrawingPage extends StatefulWidget {
   final IO.Socket socket;
@@ -40,9 +44,17 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
   Size? canvasSize;
 
   // Drawing settings
-  final String strokeColor = '#8B6914';
+  String strokeColor = '#FFEB3B'; // Default: Yellow
   final double strokeWidth = 4.0;
   final double animationDuration = 0.5;
+  
+  // Color options for pen
+  final List<Map<String, dynamic>> colorOptions = [
+    {'name': 'Yellow', 'color': '#FFEB3B', 'displayColor': Colors.yellow},
+    {'name': 'Green', 'color': '#4CAF50', 'displayColor': Colors.green},
+    {'name': 'Red', 'color': '#F44336', 'displayColor': Colors.red},
+    {'name': 'Blue', 'color': '#2196F3', 'displayColor': Colors.blue},
+  ];
   
   // Store socket listeners for cleanup
   final List<Function> socketListeners = [];
@@ -58,23 +70,9 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
   bool _controlsVisible = true;
   late AnimationController _controlsAnimationController;
   late Animation<double> _controlsAnimation;
-
-  // Lottie animation URLs from LottieFiles (free animations)
-  // Replace these with your preferred LottieFiles URLs from https://lottiefiles.com/
-  // Popular free animations:
-  // - Back arrow: Search "arrow left" or "back"
-  // - Trash: Search "delete" or "trash"
-  // - Pen: Search "pen" or "pencil"
-  // - Eraser: Search "eraser" or "delete"
-  // - Arrows: Search "arrow down" or "arrow up"
-  // 
-  // To use local files, download JSON and use: Lottie.asset('assets/animations/name.json')
-  static const String _backArrowLottie = 'https://lottie.host/embed/8c5b5e5e-3f4a-4c8b-9f2d-1e3f4a5b6c7d/8c5b5e5e.json';
-  static const String _trashLottie = 'https://lottie.host/embed/1f8e8h8h-6i7d-7f1e-2i5g-4h6i7d8e/1f8e8h8h.json';
-  static const String _penLottie = 'https://lottie.host/embed/2g9f9i9i-7j8e-8g2f-3j6h-5i7j8e9f/2g9f9i9i.json';
-  static const String _eraserLottie = 'https://lottie.host/embed/4i1h1k1k-9l0g-0i4h-5l8j-7k9l0g1h/4i1h1k1k.json';
-  static const String _arrowDownLottie = 'https://lottie.host/embed/9d6c6f6f-4g5b-5d9c-0g3e-2f4g5b6c7d/9d6c6f6f.json';
-  static const String _arrowUpLottie = 'https://lottie.host/embed/0e7d7g7g-5h6c-6e0d-1h4f-3g5h6c7d/0e7d7g7g.json';
+  
+  late AnimationController _colorPickerAnimationController;
+  late Animation<double> _colorPickerAnimation;
 
   @override
   void initState() {
@@ -100,6 +98,17 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     _controlsAnimation = CurvedAnimation(
       parent: _controlsAnimationController,
       curve: Curves.easeOutCubic,
+    );
+    
+    // Initialize color picker animation controller
+    _colorPickerAnimationController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+    
+    _colorPickerAnimation = CurvedAnimation(
+      parent: _colorPickerAnimationController,
+      curve: Curves.easeInOutCubic,
     );
     
     // Start with controls visible
@@ -199,7 +208,15 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     final loadStrokesHandler = (data) {
       if (!mounted) return;
       
-      print('📥 Received load-strokes event with data: ${data.toString().substring(0, data.toString().length > 200 ? 200 : data.toString().length)}');
+      final receivedRoomId = data['roomId'] as String?;
+      
+      // Only process strokes for the current room
+      if (receivedRoomId != null && receivedRoomId != widget.roomId) {
+        print('⚠️ Ignoring load-strokes from different room: $receivedRoomId (current: ${widget.roomId})');
+        return;
+      }
+      
+      print('📥 Received load-strokes event for room: ${widget.roomId} with data: ${data.toString().substring(0, data.toString().length > 200 ? 200 : data.toString().length)}');
       
       try {
         final strokesList = data['strokes'] as List?;
@@ -293,6 +310,13 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
       
       try {
         final stroke = Stroke.fromJson(data);
+        
+        // Only process strokes for the current room
+        if (stroke.roomId != widget.roomId) {
+          print('⚠️ Ignoring stroke from different room: ${stroke.roomId} (current: ${widget.roomId})');
+          return;
+        }
+        
         final strokeId = '${stroke.userId}_${stroke.createdAt}';
         
         if (stroke.userId == widget.userId || stroke.socketId == widget.socketId) {
@@ -322,6 +346,13 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     // Listen for canvas clear event
     final clearHandler = (data) {
       if (!mounted) return;
+      
+      final clearedRoomId = data['roomId'] as String?;
+      // Only process clear events for the current room
+      if (clearedRoomId != null && clearedRoomId != widget.roomId) {
+        return;
+      }
+      
       setState(() {
         strokes.clear();
         currentStroke.clear();
@@ -367,6 +398,13 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     // Listen for stroke deletion
     final strokeDeletedHandler = (data) {
       if (!mounted) return;
+      
+      final deletedRoomId = data['roomId'] as String?;
+      // Only process delete events for the current room
+      if (deletedRoomId != null && deletedRoomId != widget.roomId) {
+        return;
+      }
+      
       final userId = data['userId'] as String?;
       final createdAt = data['createdAt'] as int?;
       
@@ -711,8 +749,9 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
 
   @override
   void dispose() {
-    // Dispose controls animation controller
+    // Dispose animation controllers
     _controlsAnimationController.dispose();
+    _colorPickerAnimationController.dispose();
     
     // Remove all socket listeners
     for (var cleanup in socketListeners) {
@@ -736,601 +775,157 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
-        children: [
-          // Connection status bar
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: Container(
-              width: double.infinity,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              color: Colors.black.withOpacity(0.8),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Row(
-                    children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: statusColor,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        connectionStatus,
-                        style: TextStyle(
-                          color: statusColor,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 12,
-                        ),
-                      ),
-                    ],
-                  ),
-                  Text(
-                    'Users: $usersInRoom',
-                    style: TextStyle(
-                      color: Colors.grey[300],
-                      fontSize: 12,
-                    ),
-                  ),
-                ],
+    return PopScope(
+      canPop: false,
+      onPopInvoked: (bool didPop) async {
+        if (didPop) return;
+        
+        // Leave the room before navigating back
+        if (widget.socket.connected) {
+          widget.socket.emit('leave-room', {
+            'roomId': widget.roomId,
+            'userId': widget.userId,
+          });
+        }
+        
+        // Navigate back to ConnectionPage (main home screen) with existing socket
+        if (mounted) {
+          Navigator.pushAndRemoveUntil(
+            context,
+            MaterialPageRoute(
+              builder: (context) => ConnectionPage(
+                existingSocket: widget.socket,
+                existingSocketId: widget.socketId,
               ),
             ),
-          ),
-          
-          // Drawing canvas (full screen)
-          Positioned.fill(
-            child: Listener(
-              onPointerDown: _handlePointerDown,
-              onPointerMove: _handlePointerMove,
-              onPointerUp: _handlePointerUp,
-              onPointerCancel: (event) {
-                if (selectedTool == 'eraser') {
-                  _clearEraserTrail();
-                }
-                isDrawing = false;
-                currentStroke.clear();
-              },
-              child: GestureDetector(
-                // GestureDetector as fallback for devices that don't support pointer events
-                onPanStart: palmRejectionEnabled ? null : onPanStart,
-                onPanUpdate: palmRejectionEnabled ? null : onPanUpdate,
-                onPanEnd: palmRejectionEnabled ? null : onPanEnd,
-                child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final size = Size(constraints.maxWidth, constraints.maxHeight);
-                  if (canvasSize != size) {
-                    WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (mounted) {
-                        setState(() {
-                          canvasSize = size;
-                        });
-                      }
-                    });
+            (route) => false, // Remove all previous routes
+          );
+        }
+      },
+      child: Scaffold(
+        body: Stack(
+          children: [
+            ConnectionStatusBar(
+              connectionStatus: connectionStatus,
+              statusColor: statusColor,
+              usersInRoom: usersInRoom,
+            ),
+            
+            // Drawing canvas (full screen)
+            Positioned.fill(
+              child: Listener(
+                onPointerDown: _handlePointerDown,
+                onPointerMove: _handlePointerMove,
+                onPointerUp: _handlePointerUp,
+                onPointerCancel: (event) {
+                  if (selectedTool == 'eraser') {
+                    _clearEraserTrail();
                   }
-                  
-                  return Container(
-                    color: Colors.black, // Black background
-                    child: AnimatedBuilder(
-                      animation: _eraserTrailFadeController ?? _controlsAnimationController,
-                      builder: (context, child) {
-                        return CustomPaint(
-                          painter: DrawingPainter(
-                            strokes: strokes,
-                            currentStroke: currentStroke,
-                            eraserTrail: eraserTrail,
-                            eraserTrailOpacity: isErasing 
-                                ? 1.0 
-                                : (1.0 - (_eraserTrailFadeController?.value ?? 0.0)),
-                            strokeColor: strokeColor,
-                            strokeWidth: strokeWidth,
-                            canvasSize: size,
-                          ),
-                          size: size,
-                        );
-                      },
-                    ),
-                  );
+                  isDrawing = false;
+                  currentStroke.clear();
                 },
-                ),
-              ),
-            ),
-          ),
-          
-          // Floating action buttons
-          // Top left - Back button
-          Positioned(
-            top: 48,
-            left: 16,
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.grey[900]!.withOpacity(0.9),
-                shape: BoxShape.circle,
-                border: Border.all(color: Colors.grey[700]!.withOpacity(0.5), width: 1),
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.5),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Material(
-                color: Colors.transparent,
-                child: InkWell(
-                  onTap: () => Navigator.pop(context),
-                  borderRadius: BorderRadius.circular(30),
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    child: Opacity(
-                      opacity: 0.7,
-                      child: Lottie.network(
-                        _backArrowLottie,
-                        width: 24,
-                        height: 24,
-                        fit: BoxFit.contain,
-                        errorBuilder: (context, error, stackTrace) {
-                          return const Icon(Icons.arrow_back, color: Colors.white, size: 24);
-                        },
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-          
-          // Top right - Control buttons (trash, pen, eraser, toggle) - animated
-          Positioned(
-            top: 48,
-            right: 16,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Toggle controls button - always visible at top
-                Container(
-                  margin: const EdgeInsets.only(bottom: 12),
-                  decoration: BoxDecoration(
-                    color: Colors.grey[900]!.withOpacity(0.9),
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.grey[700]!.withOpacity(0.5), width: 1),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.5),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Material(
-                    color: Colors.transparent,
-                    child: InkWell(
-                      onTap: _toggleControls,
-                      borderRadius: BorderRadius.circular(30),
-                      child: Container(
-                        padding: const EdgeInsets.all(12),
-                        child: Opacity(
-                          opacity: 0.7,
-                          child: _controlsVisible
-                              ? Lottie.network(
-                                  _arrowDownLottie,
-                                  width: 24,
-                                  height: 24,
-                                  fit: BoxFit.contain,
-                                  errorBuilder: (context, error, stackTrace) {
-                                    return const Icon(Icons.keyboard_arrow_down, color: Colors.white, size: 24);
-                                  },
-                                )
-                              : Lottie.network(
-                                  _arrowUpLottie,
-                                  width: 24,
-                                  height: 24,
-                                  fit: BoxFit.contain,
-                                  errorBuilder: (context, error, stackTrace) {
-                                    return const Icon(Icons.keyboard_arrow_up, color: Colors.white, size: 24);
-                                  },
-                                ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                
-                // Animated controls (trash, pen, eraser) - fade and popup
-                AnimatedBuilder(
-                  animation: _controlsAnimation,
-                  builder: (context, child) {
-                    // Fade and scale (popup) animation
-                    final animationValue = _controlsAnimation.value;
-                    
-                    // Only show controls if animation value is greater than 0.3 to completely prevent flash
-                    if (animationValue <= 0.3) {
-                      return const SizedBox.shrink();
+                child: GestureDetector(
+                  // GestureDetector as fallback for devices that don't support pointer events
+                  onPanStart: palmRejectionEnabled ? null : onPanStart,
+                  onPanUpdate: palmRejectionEnabled ? null : onPanUpdate,
+                  onPanEnd: palmRejectionEnabled ? null : onPanEnd,
+                  child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final size = Size(constraints.maxWidth, constraints.maxHeight);
+                    if (canvasSize != size) {
+                      WidgetsBinding.instance.addPostFrameCallback((_) {
+                        if (mounted) {
+                          setState(() {
+                            canvasSize = size;
+                          });
+                        }
+                      });
                     }
                     
-                    // Clamp opacity and scale to smooth values
-                    final opacity = ((animationValue - 0.3) / 0.7).clamp(0.0, 1.0);
-                    final scale = ((animationValue - 0.3) / 0.7).clamp(0.0, 1.0);
-                    
-                    return RepaintBoundary(
-                      child: IgnorePointer(
-                        ignoring: !_controlsVisible,
-                        child: Opacity(
-                          opacity: opacity,
-                          child: ClipRect(
-                            child: Transform.scale(
-                              scale: scale,
-                              alignment: Alignment.topCenter,
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  // Delete all button (trash)
-                                  Container(
-                                    margin: const EdgeInsets.only(bottom: 12),
-                                    decoration: BoxDecoration(
-                                      color: Colors.grey[900]!.withOpacity(0.9),
-                                      shape: BoxShape.circle,
-                                      border: Border.all(color: Colors.grey[700]!.withOpacity(0.5), width: 1),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black.withOpacity(0.5),
-                                          blurRadius: 8,
-                                          offset: const Offset(0, 2),
-                                        ),
-                                      ],
-                                    ),
-                                    child: Material(
-                                      color: Colors.transparent,
-                                      child: InkWell(
-                                        onTap: clearCanvas,
-                                        borderRadius: BorderRadius.circular(30),
-                                        child: Container(
-                                          padding: const EdgeInsets.all(12),
-                                          child: Opacity(
-                                            opacity: 0.7,
-                                            child: ColorFiltered(
-                                              colorFilter: const ColorFilter.mode(Colors.red, BlendMode.srcIn),
-                                              child: Lottie.network(
-                                                _trashLottie,
-                                                width: 24,
-                                                height: 24,
-                                                fit: BoxFit.contain,
-                                                errorBuilder: (context, error, stackTrace) {
-                                                  return const Icon(Icons.delete_outline, color: Colors.red, size: 24);
-                                                },
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  
-                                  // Pen button
-                                  Container(
-                                    margin: const EdgeInsets.only(bottom: 12),
-                                    decoration: BoxDecoration(
-                                      color: Colors.grey[900]!.withOpacity(0.9),
-                                      shape: BoxShape.circle,
-                                      border: Border.all(color: Colors.grey[700]!.withOpacity(0.5), width: 1),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black.withOpacity(0.5),
-                                          blurRadius: 8,
-                                          offset: const Offset(0, 2),
-                                        ),
-                                      ],
-                                    ),
-                                    child: Material(
-                                      color: Colors.transparent,
-                                      child: InkWell(
-                                      onTap: () {
-                                        // Clear eraser trail when switching to pen
-                                        if (selectedTool == 'eraser') {
-                                          _clearEraserTrail();
-                                        }
-                                        setState(() {
-                                          selectedTool = 'pen';
-                                        });
-                                      },
-                                        borderRadius: BorderRadius.circular(30),
-                                        child: Container(
-                                          padding: const EdgeInsets.all(12),
-                                          child: Opacity(
-                                            opacity: selectedTool == 'pen' ? 1.0 : 0.6,
-                                            child: ColorFiltered(
-                                              colorFilter: ColorFilter.mode(
-                                                selectedTool == 'pen' ? Colors.amber : Colors.white,
-                                                BlendMode.srcIn
-                                              ),
-                                              child: Lottie.network(
-                                                _penLottie,
-                                                width: 24,
-                                                height: 24,
-                                                fit: BoxFit.contain,
-                                                repeat: selectedTool == 'pen',
-                                                errorBuilder: (context, error, stackTrace) {
-                                                  return Icon(
-                                                    Icons.edit,
-                                                    color: selectedTool == 'pen' ? Colors.amber : Colors.white,
-                                                    size: 24
-                                                  );
-                                                },
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  
-                                  // Eraser button
-                                  Container(
-                                    margin: const EdgeInsets.only(bottom: 12),
-                                    decoration: BoxDecoration(
-                                      color: Colors.grey[900]!.withOpacity(0.9),
-                                      shape: BoxShape.circle,
-                                      border: Border.all(color: Colors.grey[700]!.withOpacity(0.5), width: 1),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black.withOpacity(0.5),
-                                          blurRadius: 8,
-                                          offset: const Offset(0, 2),
-                                        ),
-                                      ],
-                                    ),
-                                    child: Material(
-                                      color: Colors.transparent,
-                                      child: InkWell(
-                                        onTap: () {
-                                          // Clear any existing trail when switching to eraser
-                                          if (selectedTool == 'pen') {
-                                            _clearEraserTrail();
-                                          }
-                                          setState(() {
-                                            selectedTool = 'eraser';
-                                          });
-                                        },
-                                        borderRadius: BorderRadius.circular(30),
-                                        child: Container(
-                                          padding: const EdgeInsets.all(12),
-                                          child: Opacity(
-                                            opacity: selectedTool == 'eraser' ? 1.0 : 0.6,
-                                            child: ColorFiltered(
-                                              colorFilter: ColorFilter.mode(
-                                                selectedTool == 'eraser' ? Colors.amber : Colors.white,
-                                                BlendMode.srcIn
-                                              ),
-                                              child: Lottie.network(
-                                                _eraserLottie,
-                                                width: 24,
-                                                height: 24,
-                                                fit: BoxFit.contain,
-                                                repeat: selectedTool == 'eraser',
-                                                errorBuilder: (context, error, stackTrace) {
-                                                  return Icon(
-                                                    Icons.auto_fix_high,
-                                                    color: selectedTool == 'eraser' ? Colors.amber : Colors.white,
-                                                    size: 24
-                                                  );
-                                                },
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  
-                                  // Palm rejection toggle button
-                                  Container(
-                                    decoration: BoxDecoration(
-                                      color: Colors.grey[900]!.withOpacity(0.9),
-                                      shape: BoxShape.circle,
-                                      border: Border.all(
-                                        color: palmRejectionEnabled 
-                                            ? Colors.amber.withOpacity(0.5) 
-                                            : Colors.grey[700]!.withOpacity(0.5), 
-                                        width: palmRejectionEnabled ? 2 : 1
-                                      ),
-                                      boxShadow: [
-                                        BoxShadow(
-                                          color: Colors.black.withOpacity(0.5),
-                                          blurRadius: 8,
-                                          offset: const Offset(0, 2),
-                                        ),
-                                      ],
-                                    ),
-                                    child: Material(
-                                      color: Colors.transparent,
-                                      child: InkWell(
-                                        onTap: () {
-                                          setState(() {
-                                            palmRejectionEnabled = !palmRejectionEnabled;
-                                          });
-                                        },
-                                        borderRadius: BorderRadius.circular(30),
-                                        child: Container(
-                                          padding: const EdgeInsets.all(12),
-                                          child: Opacity(
-                                            opacity: palmRejectionEnabled ? 1.0 : 0.6,
-                                            child: ColorFiltered(
-                                              colorFilter: ColorFilter.mode(
-                                                palmRejectionEnabled ? Colors.amber : Colors.white,
-                                                BlendMode.srcIn
-                                              ),
-                                              child: Icon(
-                                                palmRejectionEnabled 
-                                                    ? Icons.pan_tool 
-                                                    : Icons.pan_tool_alt,
-                                                size: 24,
-                                              ),
-                                            ),
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ),
+                    return Container(
+                      color: Colors.black, // Black background
+                      child: AnimatedBuilder(
+                        animation: _eraserTrailFadeController ?? _controlsAnimationController,
+                        builder: (context, child) {
+                          return CustomPaint(
+                            painter: DrawingPainter(
+                              strokes: strokes,
+                              currentStroke: currentStroke,
+                              eraserTrail: eraserTrail,
+                              eraserTrailOpacity: isErasing 
+                                  ? 1.0 
+                                  : (1.0 - (_eraserTrailFadeController?.value ?? 0.0)),
+                              strokeColor: strokeColor,
+                              strokeWidth: strokeWidth,
+                              canvasSize: size,
                             ),
-                          ),
-                        ),
+                            size: size,
+                          );
+                        },
                       ),
                     );
                   },
+                  ),
                 ),
-              ],
+              ),
             ),
+            
+            DrawingBackButton(
+              socket: widget.socket,
+              socketId: widget.socketId,
+              userId: widget.userId,
+              roomId: widget.roomId,
+            ),
+            
+            ControlButtons(
+            controlsVisible: _controlsVisible,
+            controlsAnimation: _controlsAnimation,
+            selectedTool: selectedTool,
+            palmRejectionEnabled: palmRejectionEnabled,
+            strokeColor: strokeColor,
+            colorOptions: colorOptions,
+            colorPickerAnimation: _colorPickerAnimation,
+            onToggleControls: _toggleControls,
+            onPenSelected: () {
+              if (selectedTool == 'eraser') {
+                _clearEraserTrail();
+              }
+              setState(() {
+                selectedTool = 'pen';
+              });
+            },
+            onEraserSelected: () {
+              if (selectedTool == 'pen') {
+                _clearEraserTrail();
+              }
+              setState(() {
+                selectedTool = 'eraser';
+                if (_colorPickerAnimationController.isCompleted) {
+                  _colorPickerAnimationController.reverse();
+                }
+              });
+            },
+            onPalmRejectionToggled: () {
+              setState(() {
+                palmRejectionEnabled = !palmRejectionEnabled;
+              });
+            },
+            onColorSelected: (color) {
+              setState(() {
+                strokeColor = color;
+              });
+            },
+            onColorPickerToggle: () {
+              if (_colorPickerAnimationController.isCompleted) {
+                _colorPickerAnimationController.reverse();
+              } else {
+                _colorPickerAnimationController.forward();
+              }
+            },
           ),
         ],
       ),
+      ),
     );
-  }
-}
-
-class DrawingPainter extends CustomPainter {
-  final List<AnimatedStroke> strokes;
-  final List<StrokePoint> currentStroke;
-  final List<Offset> eraserTrail;
-  final double eraserTrailOpacity;
-  final String strokeColor;
-  final double strokeWidth;
-  final Size canvasSize;
-
-  DrawingPainter({
-    required this.strokes,
-    required this.currentStroke,
-    required this.eraserTrail,
-    required this.eraserTrailOpacity,
-    required this.strokeColor,
-    required this.strokeWidth,
-    required this.canvasSize,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    // Background is handled by Container, so no need to draw it here
-
-    // Draw all completed strokes (animated or complete)
-    for (final animatedStroke in strokes) {
-      final visiblePoints = animatedStroke.visiblePoints;
-      if (visiblePoints.isNotEmpty) {
-        _drawStroke(canvas, visiblePoints, animatedStroke.stroke.color, animatedStroke.stroke.width);
-      }
-    }
-
-    // Draw current stroke being drawn (with glow effect)
-    if (currentStroke.isNotEmpty) {
-      _drawStroke(canvas, currentStroke, strokeColor, strokeWidth, withGlow: true);
-    }
-
-    // Draw eraser trail only if opacity > 0
-    if (eraserTrail.length > 1 && eraserTrailOpacity > 0) {
-      _drawEraserTrail(canvas, eraserTrail, eraserTrailOpacity);
-    }
-  }
-
-  void _drawEraserTrail(Canvas canvas, List<Offset> trail, double opacity) {
-    if (trail.length < 2 || opacity <= 0) return;
-
-    final path = Path();
-    path.moveTo(trail[0].dx, trail[0].dy);
-
-    // Draw smooth trail with fade effect at the end
-    for (int i = 1; i < trail.length; i++) {
-      if (i == 1) {
-        path.lineTo(trail[i].dx, trail[i].dy);
-      } else {
-        final prevPoint = trail[i - 1];
-        final currentPoint = trail[i];
-        final controlX = (prevPoint.dx + currentPoint.dx) / 2;
-        final controlY = (prevPoint.dy + currentPoint.dy) / 2;
-        path.quadraticBezierTo(prevPoint.dx, prevPoint.dy, controlX, controlY);
-      }
-    }
-
-    // Draw trail with transparent white/grey color and fade opacity
-    // Fade out the end of the trail for smoother effect
-    final baseOpacity = 0.3 * opacity;
-    final trailPaint = Paint()
-      ..color = Colors.white.withOpacity(baseOpacity)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3.0
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    canvas.drawPath(path, trailPaint);
-  }
-
-  void _drawStroke(Canvas canvas, List<StrokePoint> points, String color, double width, {bool withGlow = false}) {
-    if (points.length < 2) return;
-
-    // Convert normalized coordinates (0.0-1.0) to screen coordinates
-    final screenPoints = points.map((p) => Offset(
-      p.x * canvasSize.width,
-      p.y * canvasSize.height,
-    )).toList();
-
-    final path = Path();
-    path.moveTo(screenPoints[0].dx, screenPoints[0].dy);
-
-    // Use smooth curves for better drawing experience
-    for (int i = 1; i < screenPoints.length; i++) {
-      if (i == 1) {
-        path.lineTo(screenPoints[i].dx, screenPoints[i].dy);
-      } else {
-        // Use quadratic bezier for smoother lines
-        final prevPoint = screenPoints[i - 1];
-        final currentPoint = screenPoints[i];
-        final controlX = (prevPoint.dx + currentPoint.dx) / 2;
-        final controlY = (prevPoint.dy + currentPoint.dy) / 2;
-        path.quadraticBezierTo(prevPoint.dx, prevPoint.dy, controlX, controlY);
-      }
-    }
-
-    // Draw glow effect for current stroke
-    if (withGlow) {
-      final glowPaint = Paint()
-        ..color = _parseColor(color).withOpacity(0.3)
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = width + 4
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round
-        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3);
-      canvas.drawPath(path, glowPaint);
-    }
-
-    // Draw main stroke
-    final paint = Paint()
-      ..color = _parseColor(color)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = width
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round;
-
-    canvas.drawPath(path, paint);
-  }
-
-  Color _parseColor(String hexColor) {
-    try {
-      return Color(int.parse(hexColor.replaceAll('#', ''), radix: 16) + 0xFF000000);
-    } catch (e) {
-      return const Color(0xFF3b2f1e); // Default brown
-    }
-  }
-
-  @override
-  bool shouldRepaint(DrawingPainter oldDelegate) {
-    return strokes.length != oldDelegate.strokes.length ||
-        currentStroke.length != oldDelegate.currentStroke.length ||
-        eraserTrail.length != oldDelegate.eraserTrail.length ||
-        eraserTrailOpacity != oldDelegate.eraserTrailOpacity;
   }
 }
