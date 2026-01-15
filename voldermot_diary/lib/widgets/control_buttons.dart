@@ -20,6 +20,7 @@ class ControlButtons extends StatelessWidget {
   final VoidCallback onSetWallpaper;
 
   static const String _penLottie = 'https://lottie.host/embed/2g9f9i9i-7j8e-8g2f-3j6h-5i7j8e9f/2g9f9i9i.json';
+  static const String _eraserLottie = 'https://lottie.host/embed/4i1h1k1k-9l0g-0i4h-5l8j-7k9l0g1h/4i1h1k1k.json';
   static const String _arrowDownLottie = 'https://lottie.host/embed/9d6c6f6f-4g5b-5d9c-0g3e-2f4g5b6c7d/9d6c6f6f.json';
   static const String _arrowUpLottie = 'https://lottie.host/embed/0e7d7g7g-5h6c-6e0d-1h4f-3g5h6c7d/0e7d7g7g.json';
 
@@ -233,10 +234,24 @@ class ControlButtons extends StatelessWidget {
             padding: const EdgeInsets.all(12),
             child: Opacity(
               opacity: selectedTool == 'eraser' ? 1.0 : 0.6,
-              child: CustomPaint(
-                size: const Size(24, 24),
-                painter: EraserIconPainter(
-                  color: selectedTool == 'eraser' ? Colors.amber : Colors.white,
+              child: ColorFiltered(
+                colorFilter: ColorFilter.mode(
+                  selectedTool == 'eraser' ? Colors.amber : Colors.white,
+                  BlendMode.srcIn
+                ),
+                child: Lottie.network(
+                  _eraserLottie,
+                  width: 24,
+                  height: 24,
+                  fit: BoxFit.contain,
+                  repeat: selectedTool == 'eraser',
+                  errorBuilder: (context, error, stackTrace) {
+                    return Icon(
+                      Icons.auto_fix_high,
+                      color: selectedTool == 'eraser' ? Colors.amber : Colors.white,
+                      size: 24
+                    );
+                  },
                 ),
               ),
             ),
@@ -363,72 +378,5 @@ class ControlButtons extends StatelessWidget {
         ),
       ),
     );
-  }
-}
-
-class EraserIconPainter extends CustomPainter {
-  final Color color;
-
-  EraserIconPainter({required this.color});
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = color
-      ..style = PaintingStyle.fill
-      ..strokeWidth = 1.5;
-
-    final strokePaint = Paint()
-      ..color = color
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5;
-
-    // Draw eraser body (rounded rectangle)
-    final eraserRect = RRect.fromRectAndRadius(
-      Rect.fromLTWH(size.width * 0.15, size.height * 0.25, size.width * 0.7, size.height * 0.5),
-      const Radius.circular(2),
-    );
-    canvas.drawRRect(eraserRect, paint);
-
-    // Draw metal band at the top
-    final bandRect = Rect.fromLTWH(
-      size.width * 0.15,
-      size.height * 0.25,
-      size.width * 0.7,
-      size.height * 0.12,
-    );
-    final bandPaint = Paint()
-      ..color = color.withOpacity(0.3)
-      ..style = PaintingStyle.fill;
-    canvas.drawRect(bandRect, bandPaint);
-    canvas.drawRect(bandRect, strokePaint);
-
-    // Draw eraser tip (slightly rounded bottom)
-    final tipPath = Path()
-      ..moveTo(size.width * 0.15, size.height * 0.75)
-      ..lineTo(size.width * 0.25, size.height * 0.85)
-      ..lineTo(size.width * 0.75, size.height * 0.85)
-      ..lineTo(size.width * 0.85, size.height * 0.75)
-      ..close();
-    canvas.drawPath(tipPath, paint);
-
-    // Add some texture lines on the eraser body
-    final texturePaint = Paint()
-      ..color = color.withOpacity(0.4)
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 0.8;
-    
-    for (double i = 0.35; i < 0.75; i += 0.08) {
-      canvas.drawLine(
-        Offset(size.width * 0.2, size.height * i),
-        Offset(size.width * 0.8, size.height * i),
-        texturePaint,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) {
-    return oldDelegate is EraserIconPainter && oldDelegate.color != color;
   }
 }
