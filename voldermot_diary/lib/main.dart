@@ -3,7 +3,6 @@ import 'package:socket_io_client/socket_io_client.dart' as IO;
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'pages/loading_page.dart';
-import 'widgets/connection_status_widget.dart';
 import 'widgets/disconnected_state_widget.dart';
 import 'widgets/action_buttons_widget.dart';
 import 'widgets/pages_list_widget.dart';
@@ -18,7 +17,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Voldermot Diary',
+      title: "Voldermot's Diary",
       theme: ThemeData(
         colorScheme: ColorScheme.dark(
           primary: Colors.brown[300]!,
@@ -569,13 +568,41 @@ class _ConnectionPageState extends State<ConnectionPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('🪄 Voldermot Diary'),
+        title: Row(
+          children: [
+            Image.asset(
+              'assets/icons/logo.png',
+              height: 32,
+              width: 32,
+              fit: BoxFit.contain,
+            ),
+            const SizedBox(width: 8),
+            const Text("Voldermot's Diary"),
+          ],
+        ),
         actions: [
           if (connectionStatus == 'Connected') ...[
-            IconButton(
-              icon: const Icon(Icons.refresh),
-              onPressed: loadPages,
-              tooltip: 'Refresh Pages',
+            // Refresh button with green dot indicator
+            Stack(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.refresh),
+                  onPressed: loadPages,
+                  tooltip: 'Refresh Pages',
+                ),
+                Positioned(
+                  right: 8,
+                  top: 8,
+                  child: Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.green,
+                    ),
+                  ),
+                ),
+              ],
             ),
             IconButton(
               icon: const Icon(Icons.power_settings_new),
@@ -583,10 +610,27 @@ class _ConnectionPageState extends State<ConnectionPage> {
               tooltip: 'Disconnect',
             ),
           ] else if (connectionStatus == 'Disconnected' || connectionStatus == 'Error') ...[
-            IconButton(
-              icon: const Icon(Icons.link),
-              onPressed: connectToServer,
-              tooltip: 'Reconnect',
+            // Reconnect button with red dot indicator
+            Stack(
+              children: [
+                IconButton(
+                  icon: const Icon(Icons.link),
+                  onPressed: connectToServer,
+                  tooltip: 'Reconnect',
+                ),
+                Positioned(
+                  right: 8,
+                  top: 8,
+                  child: Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: Colors.red,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ],
         ],
@@ -598,14 +642,6 @@ class _ConnectionPageState extends State<ConnectionPage> {
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.start,
                   children: [
-                    // Compact status for connected state
-                    ConnectionStatusWidget(
-                      connectionStatus: connectionStatus,
-                      statusColor: statusColor,
-                      socketId: socketId,
-                    ),
-                    const SizedBox(height: 16),
-                    
                     // Action buttons when connected
                     ActionButtonsWidget(
                       onCreateNewPage: createNewPage,
@@ -627,13 +663,39 @@ class _ConnectionPageState extends State<ConnectionPage> {
                     
                     const SizedBox(height: 24),
                     
-                    // Server URL info
-                    Text(
-                      'Server: $serverUrl',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.grey[400],
-                      ),
+                    // Server URL and Room ID info
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          'Server: $serverUrl',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.grey[400],
+                          ),
+                        ),
+                        if (socketId.isNotEmpty) ...[
+                          const SizedBox(width: 8),
+                          Text(
+                            '|',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Colors.grey[500],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            socketId,
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontFamily: 'monospace',
+                              color: Colors.grey[400],
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ],
+                      ],
                     ),
                   ],
                 ),

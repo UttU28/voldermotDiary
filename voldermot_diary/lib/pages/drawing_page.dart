@@ -1,7 +1,12 @@
 import 'dart:ui';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
+import 'package:flutter/rendering.dart';
+import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart';
+import 'package:wallpaper_manager_plus/wallpaper_manager_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import '../models/stroke.dart';
 import '../models/animated_stroke.dart';
 import '../widgets/connection_status_bar.dart';
@@ -73,6 +78,9 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
   
   late AnimationController _colorPickerAnimationController;
   late Animation<double> _colorPickerAnimation;
+
+  // Global key for capturing canvas screenshot
+  final GlobalKey _canvasKey = GlobalKey();
 
   @override
   void initState() {
@@ -747,6 +755,286 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     });
   }
 
+  Future<void> _saveCanvasAsImage() async {
+    try {
+      // Show loading indicator
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                  ),
+                ),
+                SizedBox(width: 16),
+                Text('Saving image...'),
+              ],
+            ),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+
+      // Capture the screenshot using RepaintBoundary
+      final RenderRepaintBoundary? boundary = 
+          _canvasKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      
+      if (boundary == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Failed to capture image'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+      
+      final image = await boundary.toImage(pixelRatio: 3.0);
+      final byteData = await image.toByteData(format: ImageByteFormat.png);
+      
+      if (byteData == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Failed to convert image'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+      
+      final imageBytes = byteData.buffer.asUint8List();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final fileName = 'voldermot_diary_$timestamp.png';
+
+      // Use image_gallery_saver_plus - handles permissions automatically, no warnings!
+      final result = await ImageGallerySaverPlus.saveImage(
+        imageBytes,
+        name: fileName,
+        quality: 100,
+        isReturnImagePathOfIOS: true,
+      );
+
+      if (mounted) {
+        if (result['isSuccess'] == true || result['filePath'] != null) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(Platform.isAndroid 
+                  ? 'Image saved to gallery!'
+                  : 'Image saved to: ${result['filePath'] ?? 'gallery'}'),
+              backgroundColor: Colors.green,
+              duration: const Duration(seconds: 3),
+            ),
+          );
+        } else {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Failed to save image to gallery'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error saving image: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _setAsWallpaper() async {
+    try {
+      // First save the image, then set it as wallpaper
+      // Show loading indicator
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor: AlwaysStoppedAnimation<Color>(Colors.white),
+                  ),
+                ),
+                SizedBox(width: 16),
+                Text('Saving and setting as wallpaper...'),
+              ],
+            ),
+            duration: Duration(seconds: 2),
+          ),
+        );
+      }
+
+      // Capture the screenshot using RepaintBoundary
+      final RenderRepaintBoundary? boundary = 
+          _canvasKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
+      
+      if (boundary == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Failed to capture image'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+      
+      final image = await boundary.toImage(pixelRatio: 3.0);
+      final byteData = await image.toByteData(format: ImageByteFormat.png);
+      
+      if (byteData == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Failed to convert image'),
+              backgroundColor: Colors.red,
+            ),
+          );
+        }
+        return;
+      }
+      
+      final imageBytes = byteData.buffer.asUint8List();
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final fileName = 'voldermot_diary_wallpaper_$timestamp.png';
+
+      // Save image first to get file path
+      String? filePath;
+      
+      if (Platform.isAndroid) {
+        // Save to temporary directory first
+        final tempDir = await getTemporaryDirectory();
+        final file = File('${tempDir.path}/$fileName');
+        await file.writeAsBytes(imageBytes);
+        filePath = file.path;
+        
+        // Also save to gallery
+        await ImageGallerySaverPlus.saveImage(
+          imageBytes,
+          name: fileName,
+          quality: 100,
+        );
+        
+        // Set as wallpaper using the saved file
+        try {
+          // Verify file exists
+          final wallpaperFile = File(filePath);
+          if (!await wallpaperFile.exists()) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Wallpaper file not found'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
+            return;
+          }
+          
+          final wallpaperManager = WallpaperManagerPlus();
+          // Try with File object first, if that fails try with path string
+          dynamic result;
+          try {
+            result = await wallpaperManager.setWallpaper(
+              wallpaperFile,
+              3, // 1 = HOME_SCREEN, 2 = LOCK_SCREEN, 3 = BOTH_SCREENS
+            );
+          } catch (e) {
+            // If File object fails, try with path string
+            try {
+              result = await wallpaperManager.setWallpaper(
+                filePath,
+                3,
+              );
+            } catch (e2) {
+              throw e2; // Throw the second error
+            }
+          }
+          
+          if (mounted) {
+            // Check if result is true or a success string
+            final success = result == true || 
+                          (result is String && result.toLowerCase().contains('success')) ||
+                          result.toString().toLowerCase().contains('success');
+            
+            if (success) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Wallpaper set successfully!'),
+                  backgroundColor: Colors.green,
+                  duration: Duration(seconds: 3),
+                ),
+              );
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Failed to set wallpaper. Result: $result'),
+                  backgroundColor: Colors.red,
+                ),
+              );
+            }
+          }
+        } catch (e) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Error setting wallpaper: $e'),
+                backgroundColor: Colors.red,
+                duration: const Duration(seconds: 4),
+              ),
+            );
+          }
+        }
+      } else {
+        // iOS - wallpaper setting is more restricted
+        // Just save to gallery
+        await ImageGallerySaverPlus.saveImage(
+          imageBytes,
+          name: fileName,
+          quality: 100,
+          isReturnImagePathOfIOS: true,
+        );
+        
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Image saved! On iOS, set wallpaper manually from Photos app.'),
+              backgroundColor: Colors.orange,
+              duration: Duration(seconds: 4),
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
   @override
   void dispose() {
     // Dispose animation controllers
@@ -813,58 +1101,61 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
             
             // Drawing canvas (full screen)
             Positioned.fill(
-              child: Listener(
-                onPointerDown: _handlePointerDown,
-                onPointerMove: _handlePointerMove,
-                onPointerUp: _handlePointerUp,
-                onPointerCancel: (event) {
-                  if (selectedTool == 'eraser') {
-                    _clearEraserTrail();
-                  }
-                  isDrawing = false;
-                  currentStroke.clear();
-                },
-                child: GestureDetector(
-                  // GestureDetector as fallback for devices that don't support pointer events
-                  onPanStart: palmRejectionEnabled ? null : onPanStart,
-                  onPanUpdate: palmRejectionEnabled ? null : onPanUpdate,
-                  onPanEnd: palmRejectionEnabled ? null : onPanEnd,
-                  child: LayoutBuilder(
-                  builder: (context, constraints) {
-                    final size = Size(constraints.maxWidth, constraints.maxHeight);
-                    if (canvasSize != size) {
-                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                        if (mounted) {
-                          setState(() {
-                            canvasSize = size;
-                          });
-                        }
-                      });
+              child: RepaintBoundary(
+                key: _canvasKey,
+                child: Listener(
+                  onPointerDown: _handlePointerDown,
+                  onPointerMove: _handlePointerMove,
+                  onPointerUp: _handlePointerUp,
+                  onPointerCancel: (event) {
+                    if (selectedTool == 'eraser') {
+                      _clearEraserTrail();
                     }
-                    
-                    return Container(
-                      color: Colors.black, // Black background
-                      child: AnimatedBuilder(
-                        animation: _eraserTrailFadeController ?? _controlsAnimationController,
-                        builder: (context, child) {
-                          return CustomPaint(
-                            painter: DrawingPainter(
-                              strokes: strokes,
-                              currentStroke: currentStroke,
-                              eraserTrail: eraserTrail,
-                              eraserTrailOpacity: isErasing 
-                                  ? 1.0 
-                                  : (1.0 - (_eraserTrailFadeController?.value ?? 0.0)),
-                              strokeColor: strokeColor,
-                              strokeWidth: strokeWidth,
-                              canvasSize: size,
-                            ),
-                            size: size,
-                          );
-                        },
-                      ),
-                    );
+                    isDrawing = false;
+                    currentStroke.clear();
                   },
+                  child: GestureDetector(
+                    // GestureDetector as fallback for devices that don't support pointer events
+                    onPanStart: palmRejectionEnabled ? null : onPanStart,
+                    onPanUpdate: palmRejectionEnabled ? null : onPanUpdate,
+                    onPanEnd: palmRejectionEnabled ? null : onPanEnd,
+                    child: LayoutBuilder(
+                    builder: (context, constraints) {
+                      final size = Size(constraints.maxWidth, constraints.maxHeight);
+                      if (canvasSize != size) {
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted) {
+                            setState(() {
+                              canvasSize = size;
+                            });
+                          }
+                        });
+                      }
+                      
+                      return Container(
+                        color: Colors.black, // Black background
+                        child: AnimatedBuilder(
+                          animation: _eraserTrailFadeController ?? _controlsAnimationController,
+                          builder: (context, child) {
+                            return CustomPaint(
+                              painter: DrawingPainter(
+                                strokes: strokes,
+                                currentStroke: currentStroke,
+                                eraserTrail: eraserTrail,
+                                eraserTrailOpacity: isErasing 
+                                    ? 1.0 
+                                    : (1.0 - (_eraserTrailFadeController?.value ?? 0.0)),
+                                strokeColor: strokeColor,
+                                strokeWidth: strokeWidth,
+                                canvasSize: size,
+                              ),
+                              size: size,
+                            );
+                          },
+                        ),
+                      );
+                    },
+                    ),
                   ),
                 ),
               ),
@@ -922,6 +1213,9 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
                 _colorPickerAnimationController.forward();
               }
             },
+            onDownload: _saveCanvasAsImage,
+            // onSetWallpaper: _setAsWallpaper, // Commented out for now
+            onSetWallpaper: () {}, // Placeholder to avoid errors
           ),
         ],
       ),

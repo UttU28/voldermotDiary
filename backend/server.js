@@ -38,7 +38,7 @@ if (useHTTPS) {
 const io = new Server(server, {
   cors: {
     origin: "*", // Allow all origins for development
-    methods: ["GET", "POST", "DELETE", "PUT", "PATCH"]
+    methods: ["GET", "POST"]
   }
 });
 
@@ -119,31 +119,26 @@ app.get('/api/pages/latest', (req, res) => {
 app.delete('/api/pages/:pageId', (req, res) => {
   try {
     const { pageId } = req.params;
-    console.log(`🗑️  Delete request for page: ${pageId}`);
-    
     if (!pageId) {
       return res.status(400).json({ success: false, error: 'Page ID is required' });
     }
     
     const result = db.deletePage(pageId);
-    console.log(`🗑️  Delete result:`, result);
     
     if (result.roomDeleted) {
       // Notify all connected clients in this room that the page was deleted
       io.to(pageId).emit('page-deleted', { pageId });
       
-      console.log(`✅ Page ${pageId} deleted successfully (${result.strokesDeleted} strokes removed)`);
       res.json({ 
         success: true, 
         message: 'Page deleted successfully',
         strokesDeleted: result.strokesDeleted
       });
     } else {
-      console.log(`❌ Page ${pageId} not found`);
       res.status(404).json({ success: false, error: 'Page not found' });
     }
   } catch (error) {
-    console.error('❌ Error deleting page:', error);
+    console.error('Error deleting page:', error);
     res.status(500).json({ success: false, error: error.message });
   }
 });

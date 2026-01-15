@@ -229,7 +229,18 @@ class _HomePageState extends State<HomePage> {
     
     return Scaffold(
       appBar: AppBar(
-        title: const Text('🪄 Voldermot Diary'),
+        title: Row(
+          children: [
+            Image.asset(
+              'assets/icons/logo.png',
+              height: 32,
+              width: 32,
+              fit: BoxFit.contain,
+            ),
+            const SizedBox(width: 8),
+            const Text("Voldermot's Diary"),
+          ],
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
