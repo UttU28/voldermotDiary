@@ -306,9 +306,10 @@ io.on('connection', (socket) => {
       
       try {
         // Delete stroke from database
-        db.deleteStroke(roomId, userId, createdAt);
+        const deletedCount = db.deleteStroke(roomId, userId, createdAt);
+        console.log(`🗑️ Deleted stroke: ${strokeId} from room: ${roomId} (${deletedCount} rows affected)`);
         
-        // Broadcast delete event to all users in the room
+        // Broadcast delete event to all users in the room (including sender)
         io.to(roomId).emit('stroke-deleted', {
           roomId: roomId,
           strokeId: strokeId,
@@ -317,7 +318,7 @@ io.on('connection', (socket) => {
           deletedBy: user.userId || socket.id
         });
       } catch (error) {
-        console.error('Error deleting stroke from database:', error);
+        console.error('❌ Error deleting stroke from database:', error);
       }
     }
   });

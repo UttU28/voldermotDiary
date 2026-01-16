@@ -98,7 +98,8 @@ class _ConnectionPageState extends State<ConnectionPage> {
   // Get the correct server URL based on platform
   String get serverUrl {
     // Production URL (HTTPS)
-    const productionUrl = 'https://voldermotdiary.thatinsaneguy.com';
+    // const productionUrl = 'https://voldermotdiary.thatinsaneguy.com';
+    const productionUrl = 'http://10.0.0.65:3012';
     
     // Local development URL (for testing)
     const localUrl = 'http://10.0.0.65:3000';

@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'dart:io';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:socket_io_client/socket_io_client.dart' as IO;
@@ -45,6 +46,17 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
   Color statusColor = Colors.green;
   int usersInRoom = 1;
   
+  // Track deleted strokes during current eraser drag to prevent duplicate deletions
+  // Limited to last 1000 deletions to prevent memory leaks
+  final Set<String> _deletedStrokeIds = {};
+  static const int _maxDeletedStrokeIds = 1000;
+  
+  // Track if we're refreshing strokes due to erase (skip animation in this case)
+  bool _isEraseRefresh = false;
+  
+  // Debounce timer for requesting strokes to reduce server load
+  Timer? _requestStrokesDebounceTimer;
+  
   // Canvas dimensions for coordinate normalization
   Size? canvasSize;
 
@@ -88,8 +100,10 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     setupSocketListeners();
     
     // Request existing strokes after a short delay to ensure listeners are ready
+    // This is initial page load, so animation should play
     Future.delayed(const Duration(milliseconds: 100), () {
       if (mounted) {
+        _isEraseRefresh = false; // Ensure animation plays on initial load
         widget.socket.emit('request-strokes', {
           'roomId': widget.roomId,
         });
@@ -293,14 +307,34 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
         
         print('🎨 Adding ${loadedStrokes.length} strokes to canvas');
         
-        // Add strokes and animate them all in 1 second
+        // When loading fresh strokes from database, clear deleted stroke tracking
+        // Database is the source of truth - if a stroke is in the DB, it should be shown
+        // Clear the tracking set to prevent memory leaks and ensure fresh state
         setState(() {
           strokes.clear();
+          // If this is an erase refresh, set animation progress to 1.0 (fully visible, no animation)
+          // Otherwise, start with 0.0 for animation
+          for (var stroke in loadedStrokes) {
+            if (_isEraseRefresh) {
+              stroke.animationProgress = 1.0; // Skip animation during erase refresh
+            }
+          }
           strokes.addAll(loadedStrokes);
+          // Clear deleted stroke IDs when loading fresh strokes from database
+          // Database is source of truth - if stroke is deleted from DB, it won't be in this list
+          _deletedStrokeIds.clear();
         });
         
-        // Animate all loaded strokes together in 1 second
-        if (loadedStrokes.isNotEmpty && mounted) {
+        // Only animate if this is NOT an erase refresh (initial page load or normal refresh)
+        final shouldAnimate = !_isEraseRefresh;
+        
+        // Reset the flag after checking
+        if (_isEraseRefresh) {
+          print('⏭️ Skipping animation during erase refresh');
+          _isEraseRefresh = false;
+        }
+        
+        if (loadedStrokes.isNotEmpty && mounted && shouldAnimate) {
           print('🎬 Starting animation for ${loadedStrokes.length} strokes');
           _animateLoadedStrokes(loadedStrokes);
         }
@@ -327,7 +361,25 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
         
         final strokeId = '${stroke.userId}_${stroke.createdAt}';
         
+        // Skip if this stroke was deleted (shouldn't happen, but safety check)
+        if (_deletedStrokeIds.contains(strokeId)) {
+          print('⚠️ Ignoring stroke that was deleted: $strokeId');
+          return;
+        }
+        
+        // Skip own strokes (they're already added locally)
         if (stroke.userId == widget.userId || stroke.socketId == widget.socketId) {
+          return;
+        }
+        
+        // Check if stroke already exists (prevent duplicates)
+        final alreadyExists = strokes.any((s) => 
+          s.stroke.userId == stroke.userId && 
+          s.stroke.createdAt == stroke.createdAt
+        );
+        
+        if (alreadyExists) {
+          print('⚠️ Ignoring duplicate stroke: $strokeId');
           return;
         }
         
@@ -364,6 +416,7 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
       setState(() {
         strokes.clear();
         currentStroke.clear();
+        _deletedStrokeIds.clear(); // Clear deleted stroke tracking when canvas is cleared
       });
     };
     
@@ -373,14 +426,53 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     // Listen for connection status
     final statusHandler = (data) {
       if (!mounted) return;
+      final status = (data['status'] ?? 'connected').toString().toLowerCase();
       setState(() {
-        connectionStatus = data['status'] ?? 'Connected';
-        statusColor = connectionStatus == 'Connected' ? Colors.green : Colors.red;
+        connectionStatus = status;
+        // Map status to color: 'connected' -> green, 'disconnected'/'error' -> red, else -> orange
+        if (status == 'connected') {
+          statusColor = Colors.green;
+          connectionStatus = 'Connected'; // Normalize for display
+        } else if (status == 'disconnected' || status == 'error') {
+          statusColor = Colors.red;
+          connectionStatus = status == 'disconnected' ? 'Disconnected' : 'Error';
+        } else {
+          statusColor = Colors.orange;
+          connectionStatus = 'Connecting...';
+        }
       });
     };
     
     widget.socket.on('connection-status', statusHandler);
     socketListeners.add(() => widget.socket.off('connection-status', statusHandler));
+
+    // Listen for room-joined event (happens when joining or rejoining a room)
+    final roomJoinedHandler = (data) {
+      if (!mounted) return;
+      final joinedRoomId = data['roomId'] as String?;
+      
+      // Only process if it's our room
+      if (joinedRoomId != null && joinedRoomId == widget.roomId) {
+        print('🔄 Room joined/rejoined: $joinedRoomId');
+        setState(() {
+          usersInRoom = data['usersInRoom'] ?? usersInRoom;
+        });
+        
+        // Request fresh strokes after room join completes
+        // Backend sends automatically after 3.5s, but also request immediately
+        Future.delayed(const Duration(milliseconds: 100), () {
+          if (mounted) {
+            _isEraseRefresh = false; // Allow animation on rejoin
+            widget.socket.emit('request-strokes', {
+              'roomId': widget.roomId,
+            });
+          }
+        });
+      }
+    };
+    
+    widget.socket.on('room-joined', roomJoinedHandler);
+    socketListeners.add(() => widget.socket.off('room-joined', roomJoinedHandler));
 
     // Listen for user joined/left
     final userJoinedHandler = (data) {
@@ -417,11 +509,37 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
       final createdAt = data['createdAt'] as int?;
       
       if (userId != null && createdAt != null) {
+        final strokeId = '${userId}_${createdAt}';
+        
+        // Mark as deleted to prevent re-adding
+        _deletedStrokeIds.add(strokeId);
+        
+        // Prevent memory leak by limiting set size
+        if (_deletedStrokeIds.length > _maxDeletedStrokeIds) {
+          final idsList = _deletedStrokeIds.toList();
+          idsList.removeRange(0, idsList.length - _maxDeletedStrokeIds ~/ 2);
+          _deletedStrokeIds.clear();
+          _deletedStrokeIds.addAll(idsList);
+        }
+        
+        // Remove from local state immediately
         setState(() {
           strokes.removeWhere((s) => 
             s.stroke.userId == userId && 
             s.stroke.createdAt == createdAt
           );
+        });
+        
+        // Debounce stroke refresh requests to reduce server load
+        // Cancel any pending request and schedule a new one
+        _requestStrokesDebounceTimer?.cancel();
+        _requestStrokesDebounceTimer = Timer(const Duration(milliseconds: 600), () {
+          if (mounted) {
+            _isEraseRefresh = true; // Mark as erase refresh to skip animation
+            widget.socket.emit('request-strokes', {
+              'roomId': widget.roomId,
+            });
+          }
         });
       }
     };
@@ -435,6 +553,46 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
       setState(() {
         connectionStatus = 'Disconnected';
         statusColor = Colors.red;
+      });
+    });
+    
+    // Listen for reconnect - rejoin room and fetch fresh data
+    widget.socket.onConnect((_) {
+      if (!mounted) return;
+      print('🔄 Reconnected to server, rejoining room and fetching data');
+      setState(() {
+        connectionStatus = 'Connected';
+        statusColor = Colors.green;
+      });
+      
+      // Clear any stale data
+      _deletedStrokeIds.clear();
+      
+      // Rejoin the room
+      widget.socket.emit('join-room', {
+        'roomId': widget.roomId,
+        'userId': widget.userId,
+      });
+      
+      // Request fresh strokes multiple times to ensure we get the latest data
+      // First request immediately
+      Future.delayed(const Duration(milliseconds: 100), () {
+        if (mounted) {
+          _isEraseRefresh = false; // Allow animation on reconnection
+          widget.socket.emit('request-strokes', {
+            'roomId': widget.roomId,
+          });
+        }
+      });
+      
+      // Second request after room join completes (backend sends after 3.5s, so request at 4s)
+      Future.delayed(const Duration(milliseconds: 4000), () {
+        if (mounted) {
+          _isEraseRefresh = false;
+          widget.socket.emit('request-strokes', {
+            'roomId': widget.roomId,
+          });
+        }
       });
     });
   }
@@ -460,6 +618,7 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
         eraserTrail.add(event.localPosition);
         _eraserTrailFadeController?.stop();
         _eraserTrailFadeController?.reset();
+        // Don't clear deleted stroke IDs - keep them to prevent re-adding deleted strokes
       });
       _handleEraserDrag(event.localPosition);
       return;
@@ -499,6 +658,7 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
         eraserTrail.add(details.localPosition);
         _eraserTrailFadeController?.stop();
         _eraserTrailFadeController?.reset();
+        // Don't clear deleted stroke IDs - keep them to prevent re-adding deleted strokes
       });
       _handleEraserDrag(details.localPosition);
       return;
@@ -547,10 +707,18 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     const eraserRadius = 0.04; // 4% of screen size for eraser contact area
     
     // Find all strokes that come in contact with the eraser position
-    final Set<Stroke> strokesToDelete = {};
+    final List<AnimatedStroke> strokesToDelete = [];
     
     // Check each stroke's points to see if any are within eraser radius
-    for (var animatedStroke in strokes) {
+    // Use a copy of the strokes list to avoid modification during iteration
+    final strokesCopy = List<AnimatedStroke>.from(strokes);
+    for (var animatedStroke in strokesCopy) {
+      // Skip if this stroke was already deleted
+      final strokeId = '${animatedStroke.stroke.userId}_${animatedStroke.stroke.createdAt}';
+      if (_deletedStrokeIds.contains(strokeId)) {
+        continue;
+      }
+      
       for (var point in animatedStroke.stroke.points) {
         final dx = point.x - normalizedX;
         final dy = point.y - normalizedY;
@@ -558,22 +726,41 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
         
         // If any point of the stroke is within eraser radius, mark for deletion
         if (distance < (eraserRadius * eraserRadius)) {
-          strokesToDelete.add(animatedStroke.stroke);
+          strokesToDelete.add(animatedStroke);
           break; // No need to check other points of this stroke
         }
       }
     }
     
     // Delete all strokes that came in contact
-    for (var stroke in strokesToDelete) {
-      _deleteStroke(stroke);
+    for (var animatedStroke in strokesToDelete) {
+      _deleteStroke(animatedStroke.stroke);
     }
   }
   
   void _deleteStroke(Stroke stroke) {
     if (!mounted) return;
     
-    // Remove from local state
+    final strokeId = '${stroke.userId}_${stroke.createdAt}';
+    
+    // Skip if already deleted
+    if (_deletedStrokeIds.contains(strokeId)) {
+      return;
+    }
+    
+    // Mark as deleted
+    _deletedStrokeIds.add(strokeId);
+    
+    // Prevent memory leak by limiting set size
+    if (_deletedStrokeIds.length > _maxDeletedStrokeIds) {
+      // Remove oldest entries (convert to list, remove first, recreate set)
+      final idsList = _deletedStrokeIds.toList();
+      idsList.removeRange(0, idsList.length - _maxDeletedStrokeIds ~/ 2);
+      _deletedStrokeIds.clear();
+      _deletedStrokeIds.addAll(idsList);
+    }
+    
+    // Remove from local state immediately
     setState(() {
       strokes.removeWhere((s) => 
         s.stroke.createdAt == stroke.createdAt && 
@@ -584,9 +771,21 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     // Send delete request to server
     widget.socket.emit('delete-stroke', {
       'roomId': widget.roomId,
-      'strokeId': '${stroke.userId}_${stroke.createdAt}',
+      'strokeId': strokeId,
       'userId': stroke.userId,
       'createdAt': stroke.createdAt,
+    });
+    
+    // Debounce stroke refresh requests to reduce server load
+    // Cancel any pending request and schedule a new one
+    _requestStrokesDebounceTimer?.cancel();
+    _requestStrokesDebounceTimer = Timer(const Duration(milliseconds: 800), () {
+      if (mounted) {
+        _isEraseRefresh = true; // Mark as erase refresh to skip animation
+        widget.socket.emit('request-strokes', {
+          'roomId': widget.roomId,
+        });
+      }
     });
   }
 
@@ -663,6 +862,7 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     // Immediately clear eraser trail when drag ends
     if (selectedTool == 'eraser') {
       _clearEraserTrail();
+      // Keep deleted stroke IDs tracked (don't clear here - only clear when starting new drag)
       return;
     }
     
@@ -699,6 +899,7 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     // Immediately clear eraser trail when drag ends
     if (selectedTool == 'eraser') {
       _clearEraserTrail();
+      // Keep deleted stroke IDs tracked (don't clear here - only clear when starting new drag)
       return;
     }
     
@@ -741,6 +942,26 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     setState(() {
       strokes.clear();
       currentStroke.clear();
+      _deletedStrokeIds.clear(); // Clear deleted stroke tracking when canvas is cleared
+    });
+    
+    // Request fresh strokes from database after clearing to ensure sync
+    // Don't mark as erase refresh - clearing canvas should show animation on reload
+    Future.delayed(const Duration(milliseconds: 500), () {
+      if (mounted) {
+        widget.socket.emit('request-strokes', {
+          'roomId': widget.roomId,
+        });
+      }
+    });
+  }
+  
+  // Force refresh strokes from database
+  void _refreshStrokesFromDatabase() {
+    if (!mounted) return;
+    _isEraseRefresh = false; // Allow animation on manual refresh
+    widget.socket.emit('request-strokes', {
+      'roomId': widget.roomId,
     });
   }
 
@@ -1057,6 +1278,12 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
     // Clear state
     strokes.clear();
     currentStroke.clear();
+    eraserTrail.clear();
+    _deletedStrokeIds.clear(); // Clear deleted stroke tracking on dispose
+    
+    // Cancel debounce timer
+    _requestStrokesDebounceTimer?.cancel();
+    _requestStrokesDebounceTimer = null;
     
     super.dispose();
   }
@@ -1176,6 +1403,47 @@ class _DrawingPageState extends State<DrawingPage> with TickerProviderStateMixin
             strokeColor: strokeColor,
             colorOptions: colorOptions,
             colorPickerAnimation: _colorPickerAnimation,
+            connectionStatus: connectionStatus,
+            statusColor: statusColor,
+            onRefresh: () {
+              // Request fresh strokes from database
+              _isEraseRefresh = false; // Allow animation on manual refresh
+              
+              // If disconnected, try to reconnect first
+              if (!widget.socket.connected) {
+                print('🔄 Not connected, attempting to reconnect...');
+                setState(() {
+                  connectionStatus = 'Connecting...';
+                  statusColor = Colors.orange;
+                });
+                widget.socket.connect();
+                
+                // Wait for connection, then request strokes
+                Future.delayed(const Duration(milliseconds: 1000), () {
+                  if (mounted && widget.socket.connected) {
+                    // Rejoin room first
+                    widget.socket.emit('join-room', {
+                      'roomId': widget.roomId,
+                      'userId': widget.userId,
+                    });
+                    
+                    // Then request strokes
+                    Future.delayed(const Duration(milliseconds: 500), () {
+                      if (mounted) {
+                        widget.socket.emit('request-strokes', {
+                          'roomId': widget.roomId,
+                        });
+                      }
+                    });
+                  }
+                });
+              } else {
+                // Already connected, just request fresh strokes
+                widget.socket.emit('request-strokes', {
+                  'roomId': widget.roomId,
+                });
+              }
+            },
             onToggleControls: _toggleControls,
             onPenSelected: () {
               if (selectedTool == 'eraser') {

@@ -18,6 +18,9 @@ class ControlButtons extends StatelessWidget {
   final VoidCallback onColorPickerToggle;
   final VoidCallback onDownload;
   final VoidCallback onSetWallpaper;
+  final String connectionStatus;
+  final Color statusColor;
+  final VoidCallback onRefresh;
 
   static const String _penLottie = 'https://lottie.host/embed/2g9f9i9i-7j8e-8g2f-3j6h-5i7j8e9f/2g9f9i9i.json';
   static const String _eraserLottie = 'https://lottie.host/embed/4i1h1k1k-9l0g-0i4h-5l8j-7k9l0g1h/4i1h1k1k.json';
@@ -41,6 +44,9 @@ class ControlButtons extends StatelessWidget {
     required this.onColorPickerToggle,
     required this.onDownload,
     required this.onSetWallpaper,
+    required this.connectionStatus,
+    required this.statusColor,
+    required this.onRefresh,
   });
 
   @override
@@ -133,6 +139,7 @@ class ControlButtons extends StatelessWidget {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      _buildRefreshButton(),
                       _buildPenButton(),
                       ColorPicker(
                         colorOptions: colorOptions,
@@ -153,6 +160,82 @@ class ControlButtons extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+
+  Widget _buildRefreshButton() {
+    // Determine color based on status (case-insensitive check)
+    Color dotColor;
+    final statusLower = connectionStatus.toLowerCase();
+    if (statusLower == 'connected') {
+      dotColor = Colors.green;
+    } else if (statusLower == 'disconnected' || statusLower == 'error') {
+      dotColor = Colors.red;
+    } else {
+      dotColor = Colors.orange; // Connecting or other states
+    }
+    
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.grey[900]!.withOpacity(0.9),
+        shape: BoxShape.circle,
+        border: Border.all(color: Colors.grey[700]!.withOpacity(0.5), width: 1),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.5),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: onRefresh,
+          borderRadius: BorderRadius.circular(30),
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Container(
+                padding: const EdgeInsets.all(12),
+                child: const Opacity(
+                  opacity: 0.9,
+                  child: Icon(
+                    Icons.refresh,
+                    color: Colors.white,
+                    size: 24,
+                  ),
+                ),
+              ),
+              // Status indicator dot on top right
+              Positioned(
+                top: 6,
+                right: 6,
+                child: Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    color: dotColor,
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: Colors.grey[900]!,
+                      width: 1.5,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: dotColor.withOpacity(0.6),
+                        blurRadius: 3,
+                        spreadRadius: 0.5,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
