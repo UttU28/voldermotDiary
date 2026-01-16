@@ -361,6 +361,7 @@ server.listen(PORT, () => {
   console.log(`🌐 Server URL: ${protocol}://${DOMAIN}:${PORT}`);
   console.log(`🏥 Health check: ${protocol}://${DOMAIN}:${PORT}/health`);
   if (!useHTTPS && DOMAIN !== 'localhost') {
-    console.log(`🔒 To enable HTTPS, run: sudo certbot --nginx -d ${DOMAIN}`);
+    console.log(`🔒 To enable HTTPS, run: sudo certbot --nginx -d ${DOMAIN} --keep-until-expiring`);
+    console.log(`   (Reuses existing certificates if valid, only requests new if expired)`);
   }
 });

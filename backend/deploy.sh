@@ -156,7 +156,9 @@ if command -v nginx &> /dev/null && [ -f "/etc/nginx/sites-enabled/voldermotDiar
     print_status "Subdomain: http://voldermotDiary.thatinsaneguy.com"
     print_status ""
     print_status "🔒 To enable HTTPS, run:"
-    echo "   sudo certbot --nginx -d voldermotDiary.thatinsaneguy.com"
+    echo "   sudo certbot --nginx -d voldermotDiary.thatinsaneguy.com --keep-until-expiring"
+    echo ""
+    echo "   Note: Reuses existing certificates if valid. Only requests new if expired."
 fi
 print_status ""
 print_status "Useful commands:"
